@@ -1,0 +1,8 @@
+# Python
+__pycache__/
+*.pyc
+
+# Generated analyzer outputs
+*_data.json
+*_ToolOutput.xlsx
+_validate_*.json
