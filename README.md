@@ -7,8 +7,8 @@ customization-retrofit plan.
 The problem it solves: a customer (e.g. KBZ) customized a controller on top of an old
 vendor base (R21); the vendor then evolved that base to a new release (R26). You need to
 carry the customizations onto the new base. This is a **three-way merge with the old base
-as the common ancestor** — the tool separates *genuine* logic changes from formatting noise
-and classifies each one by how to retrofit it.
+as the common ancestor** — the studio separates *genuine* logic changes from formatting
+noise and classifies each one by how to retrofit it.
 
 ```
         R21  (old base = common ancestor)
@@ -19,20 +19,47 @@ and classifies each one by how to retrofit it.
       R26 + KBZ   ← the retrofit you produce
 ```
 
-## Quick start (no install)
+## Workflow: format first, then compare
+
+Run the input files through the **formatter** first, then upload the *formatted* copies to
+the **studio**. Formatting every file identically up front is what makes the comparison
+clean — otherwise cosmetic differences (brace style, indentation, line endings) show up as
+fake changes.
+
+### Step 1 — Format the inputs (Python)
+
+```bash
+pip install jsbeautifier
+python format_js.py X_R21.js X_KBZ.js X_R26.js
+```
+
+Each file is re-formatted to one standard style and written to **`Formatted_JS_Outputs/`**.
+Only whitespace / brace placement / indentation change — no tokens, strings, comments or
+logic are touched. Rules applied:
+
+1. **K&R braces** — `if (cond) {` … `} else {` … `}` (an opening `{` never sits alone on a
+   line; `else` / `catch` / `finally` hug the closing `}`).
+2. **`key: value`** spacing.
+3. **No line wrapping** — a long `let x = …` stays on one line regardless of length.
+
+Options: `--out <folder>` (default `Formatted_JS_Outputs`), `--indent <n>` (default 4),
+`--suffix _formatted`. You can also pass a folder to format every `.js` inside it.
+
+### Step 2 — Upload the formatted files to the studio
 
 1. Open **`index.html`** (or `retrofit_studio.html`) in any browser — double-click it.
-2. Upload the three `.js` controllers: **Base (old)**, **Custom**, **New base** (3rd optional).
-   Labels auto-fill from the filename suffix (e.g. `…_R21.js` → `R21`).
+2. Upload the three **formatted** controllers from `Formatted_JS_Outputs/`:
+   **Base (old)**, **Custom**, **New base** (the 3rd is optional). Labels auto-fill from the
+   filename suffix (e.g. `…_R21.js` → `R21`).
 3. Click **Analyze**.
 
-Everything — JS parsing, token-level diff, retrofit-bucket classification, widget scan —
-runs **entirely in your browser**. Nothing is uploaded anywhere; no server or internet needed.
+Everything in the studio runs **entirely in your browser** — no server or internet needed.
 
-### What you get (tabs)
+### What the studio shows (tabs)
 - **Overview** — module signatures + the list of customizations to retrofit.
-- **Genuine Changes** — every real Custom-vs-Base change; click one for a 3-way diff
-  (toggle Custom↔Base, New↔Base, Custom↔New). Formatting/brace/wrapping differences are ignored.
+- **Genuine Changes** — every real Custom-vs-Base change; click one for a side-by-side diff
+  with a version-pair selector (**R21 vs KBZ**, **R21 vs R26**, **KBZ vs R26**) and a
+  **3-column** view. Each column keeps its own line numbers; only real changes are highlighted.
 - **3-Way + Buckets** — every member with a Custom delta and its retrofit bucket (1–5).
 - **Retrofit Checklist** — one row per change; fill Action / Field-remap / Other-layers /
   Risk / Status / Notes and tick **Validated**. Auto-saves to your browser; export JSON/CSV.
@@ -59,18 +86,18 @@ python controller_compare.py \
   --out X_Comparison.xlsx --json X_data.json --labels R21 KBZ R26
 ```
 
-The browser studio and the Python tool are verified to produce **identical** results.
-
 ## Repo layout
-| File | Purpose |
-|------|---------|
-| `index.html` | Default entry point → opens the studio |
-| `retrofit_studio.html` | **The tool** — upload 3 files, analyze in-browser |
-| `controller_compare.py` | Same analyzer as a Python CLI (batch/CI) |
-| `compare_viewer.html` | Legacy viewer that loads Python-generated JSON |
-| `frmCustomerProfileEntitlementsController_*.js` | Example controller set (R21/KBZ/R26) |
+| File / folder | Purpose |
+|---------------|---------|
+| `format_js.py` | **Step 1** — standard JS formatter (run this on the inputs first) |
+| `Formatted_JS_Outputs/` | where the formatter writes the formatted copies |
+| `index.html` | default entry point → opens the studio |
+| `retrofit_studio.html` | **Step 2** — the studio; upload the formatted files and analyze |
+| `controller_compare.py` | same analyzer as a Python CLI (batch/CI) |
+| `compare_viewer.html` | legacy viewer that loads Python-generated JSON |
+| `frmCustomerProfileEntitlementsController_*.js` | example controller set (R21/KBZ/R26) |
 
 ## What is deterministic vs judgment
-The tool fills every factual column (what changed, presence across versions, bucket
+The studio fills every factual column (what changed, presence across versions, bucket
 candidate, widget remap). The checklist's Action / Field-remap / Other-layers / Risk columns
 are left blank by design — that is the intent/judgment layer for an engineer (or an LLM pass).

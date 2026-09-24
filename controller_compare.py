@@ -54,7 +54,8 @@ FUNC_TYPES = ("FunctionExpression", "ArrowFunctionExpression")
 # --------------------------------------------------------------------------- #
 def read(path):
     with open(path, encoding="utf-8", errors="replace") as f:
-        return f.read()
+        # normalize CRLF/CR -> LF so line-based diffs align regardless of source EOL
+        return f.read().replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _beautify_opts():
