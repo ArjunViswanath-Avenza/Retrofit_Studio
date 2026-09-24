@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Controller Retrofit Viewer</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --panel:#ffffff; --ink:#1b1f24; --muted:#5b6470; --line:#e2e6ec;
+    --accent:#2e5496; --accent2:#1f3864;
+    --add-bg:#e6f4ea; --add-mark:#b7e1c4; --del-bg:#fdecec; --del-mark:#f4c3c3;
+    --b1:#e2efda; --b2:#fce4d6; --b3:#deeaf6; --b4:#e2efda; --b5:#deeaf6; --bq:#ededed;
+    --mono:"Consolas","SFMono-Regular",Menlo,monospace;
+    --sans:"Segoe UI",system-ui,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+    --bg:#0f1216; --panel:#171b21; --ink:#e6e9ee; --muted:#9aa4b2; --line:#2a303a;
+    --accent:#5b8def; --accent2:#8fb0f5;
+    --add-bg:#12291b; --add-mark:#1f5133; --del-bg:#2c1618; --del-mark:#5e2a2e;
+    --b1:#1f3a25; --b2:#4a2f1c; --b3:#1c3050; --b4:#1f3a25; --b5:#1c3050; --bq:#22262e;
+  }}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:14px}
+  header{position:sticky;top:0;z-index:5;background:var(--accent2);color:#fff;padding:12px 18px;
+    display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  header h1{font-size:16px;margin:0;font-weight:700}
+  header .meta{font-size:12px;opacity:.9}
+  .btn{background:var(--accent);color:#fff;border:0;border-radius:6px;padding:7px 12px;
+    cursor:pointer;font-size:13px}
+  .btn.ghost{background:transparent;border:1px solid rgba(255,255,255,.5)}
+  main{max-width:1400px;margin:0 auto;padding:16px}
+  #drop{border:2px dashed var(--line);border-radius:10px;padding:40px;text-align:center;
+    color:var(--muted);background:var(--panel)}
+  #drop.drag{border-color:var(--accent);color:var(--accent)}
+  .cards{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 16px;min-width:120px}
+  .card .n{font-size:22px;font-weight:700}
+  .card .l{font-size:12px;color:var(--muted)}
+  .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-top:8px;flex-wrap:wrap}
+  .tab{padding:9px 14px;cursor:pointer;border:1px solid transparent;border-bottom:0;border-radius:8px 8px 0 0;color:var(--muted)}
+  .tab.active{background:var(--panel);border-color:var(--line);color:var(--ink);font-weight:600}
+  .view{background:var(--panel);border:1px solid var(--line);border-top:0;border-radius:0 0 10px 10px;padding:14px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{background:var(--accent2);color:#fff;position:sticky;top:56px}
+  tr:nth-child(even) td{background:rgba(127,127,127,.04)}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:700}
+  .Added{background:var(--add-mark)} .Removed{background:var(--del-mark)} .Modified{background:#ffe6a3;color:#000}
+  .b1{background:var(--b1)} .b2{background:var(--b2)} .b3{background:var(--b3)} .b4{background:var(--b4)} .b5{background:var(--b5)} .bq{background:var(--bq)}
+  .mono{font-family:var(--mono)}
+  .memberlist{max-height:70vh;overflow:auto}
+  .memrow{padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:6px;cursor:pointer;background:var(--panel)}
+  .memrow:hover{border-color:var(--accent)}
+  .memrow.sel{border-color:var(--accent);box-shadow:0 0 0 2px rgba(46,84,150,.2)}
+  .split{display:grid;grid-template-columns:340px 1fr;gap:14px}
+  @media(max-width:900px){.split{grid-template-columns:1fr}}
+  .diffwrap{overflow:auto;border:1px solid var(--line);border-radius:8px}
+  .diff{border-collapse:collapse;width:100%;font-family:var(--mono);font-size:12px}
+  .diff td{border:0;border-bottom:1px solid rgba(127,127,127,.08);padding:1px 8px;white-space:pre-wrap;word-break:break-word;vertical-align:top}
+  .diff td.gut{width:1%;color:var(--muted);text-align:right;user-select:none;background:rgba(127,127,127,.05)}
+  .diff tr.del td{background:var(--del-bg)} .diff tr.add td{background:var(--add-bg)}
+  .diff tr.del td.code{box-shadow:inset 3px 0 var(--del-mark)}
+  .diff tr.add td.code{box-shadow:inset 3px 0 var(--add-mark)}
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:6px 0}
+  .seg button{background:var(--panel);border:0;padding:6px 12px;cursor:pointer;color:var(--muted);font-size:12px}
+  .seg button.on{background:var(--accent);color:#fff}
+  input,select,textarea{font-family:var(--sans);font-size:12px;color:var(--ink);background:var(--panel);
+    border:1px solid var(--line);border-radius:5px;padding:4px 6px;width:100%}
+  textarea{resize:vertical;min-height:32px}
+  .tag{font-size:11px;color:var(--muted)}
+  .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px}
+  .hidden{display:none}
+  code.k{background:rgba(127,127,127,.12);padding:1px 5px;border-radius:4px;font-family:var(--mono)}
+  .note{color:var(--muted);font-size:12px;margin:6px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Controller Retrofit Viewer</h1>
+  <span class="meta" id="hdrMeta">No data loaded</span>
+  <span style="flex:1"></span>
+  <button class="btn ghost" id="loadBtn">Load JSON…</button>
+  <input type="file" id="file" accept=".json" class="hidden"/>
+</header>
+<main>
+  <div id="drop">
+    Drag &amp; drop a <code class="k">*_data.json</code> here, or click <b>Load JSON…</b><br/>
+    <span class="tag">Generate it with: <code class="k">python controller_compare.py --base-old … --custom … --base-new … --json out.json --labels R21 KBZ R26</code></span>
+  </div>
+
+  <div id="app" class="hidden">
+    <div class="cards" id="cards"></div>
+    <div class="tabs" id="tabs"></div>
+    <div class="view" id="view"></div>
+  </div>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+let DATA=null, LABELS=[], OLD=null, CUST=null, NEW=null, CTRL="controller";
+let curTab="overview", curMember=null, curPair="CUST_OLD";
+
+/* ---------- file loading ---------- */
+$("#loadBtn").onclick=()=>$("#file").click();
+$("#file").onchange=e=>{const f=e.target.files[0]; if(f) readFile(f);};
+const drop=$("#drop");
+["dragover","dragenter"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add("drag");}));
+["dragleave","drop"].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove("drag");}));
+drop.addEventListener("drop",e=>{const f=e.dataTransfer.files[0]; if(f) readFile(f);});
+function readFile(f){const r=new FileReader(); r.onload=()=>{try{load(JSON.parse(r.result));}catch(err){alert("Invalid JSON: "+err);}}; r.readAsText(f);}
+
+function load(json){
+  DATA=json; LABELS=json.labels;
+  OLD=LABELS[0]; CUST=LABELS[1]; NEW=LABELS.length>2?LABELS[2]:null;
+  CTRL=(json.paths&&json.paths[1])||"controller";
+  curPair = NEW? "CUST_OLD":"CUST_OLD";
+  $("#drop").classList.add("hidden"); $("#app").classList.remove("hidden");
+  $("#hdrMeta").textContent = json.paths.join("   •   ");
+  renderCards(); renderTabs(); renderTab();
+}
+
+function renderCards(){
+  const m=DATA.members, bucketCount={};
+  Object.values(m).forEach(x=>{if(x.bucket) bucketCount[x.bucket]=(bucketCount[x.bucket]||0)+1;});
+  const c=[];
+  LABELS.forEach(l=>c.push(`<div class="card"><div class="n">${DATA.counts[l]}</div><div class="l">${l} members</div></div>`));
+  c.push(`<div class="card"><div class="n">${DATA.genuine_changes.length}</div><div class="l">${CUST} vs ${OLD} changes</div></div>`);
+  if(NEW){
+    const b=(k)=>bucketCount[k]||0;
+    c.push(`<div class="card"><div class="n">${b('1')}/${b('2')}/${b('3')}/${b('4')}/${b('5')}</div><div class="l">buckets 1·2·3·4·5</div></div>`);
+  }
+  $("#cards").innerHTML=c.join("");
+}
+
+function renderTabs(){
+  const tabs=[["overview","Overview"],["genuine",`Genuine Changes (${CUST}→${OLD})`]];
+  if(NEW){tabs.push(["threeway","3-Way + Buckets"]);tabs.push(["checklist","Retrofit Checklist"]);tabs.push(["widgets","Widget Remap"]);}
+  $("#tabs").innerHTML=tabs.map(([k,t])=>`<div class="tab ${k===curTab?'active':''}" data-k="${k}">${t}</div>`).join("");
+  $("#tabs").querySelectorAll(".tab").forEach(el=>el.onclick=()=>{curTab=el.dataset.k;renderTabs();renderTab();});
+}
+
+function renderTab(){
+  const v=$("#view");
+  if(curTab==="overview") return v.innerHTML=overviewHTML();
+  if(curTab==="genuine")  return renderMembers(v, DATA.genuine_changes, true);
+  if(curTab==="threeway") return renderThreeway(v);
+  if(curTab==="checklist")return renderChecklist(v);
+  if(curTab==="widgets")  return renderWidgets(v);
+}
+
+/* ---------- overview ---------- */
+function overviewHTML(){
+  const mn=DATA.module_names;
+  let s=`<p class="note">Model: <b>${OLD}</b> = old base (common ancestor) · <b>${CUST}</b> = customisation on ${OLD} · <b>${NEW||'—'}</b> = new base / upgrade target.
+  Each <b>${CUST}</b> change must be re-expressed on <b>${NEW||'the new base'}</b>.</p>`;
+  s+=`<table><tr><th>Module signature</th>${LABELS.map(l=>`<th>${l}</th>`).join("")}</tr>
+      <tr><td>define()</td>${LABELS.map(l=>`<td class="mono">${mn[l]?('"'+mn[l]+'"'):'(anonymous)'}</td>`).join("")}</tr></table>`;
+  if(NEW){
+    const rows=DATA.genuine_changes.map(n=>{const x=DATA.members[n];
+      return `<tr><td><b>${n}</b></td><td><span class="pill ${x.change}">${x.change}</span></td>
+        <td class="b${x.bucket||'q'}">${x.bucket?('Bucket '+x.bucket):''}</td><td>${x.note||''}</td></tr>`;}).join("");
+    s+=`<h3>Customisations to retrofit onto ${NEW}</h3>
+        <table><tr><th>Member</th><th>Change</th><th>Bucket (candidate)</th><th>Deterministic note</th></tr>${rows}</table>`;
+  }
+  return s;
+}
+
+/* ---------- member list + diff ---------- */
+function renderMembers(v, names, onlyChanged){
+  if(!names.length) return v.innerHTML="<p>No changes.</p>";
+  if(!curMember||!names.includes(curMember)) curMember=names[0];
+  v.innerHTML=`<div class="split">
+    <div class="memberlist" id="mlist"></div>
+    <div id="mdetail"></div></div>`;
+  const list=$("#mlist");
+  list.innerHTML=names.map(n=>{const x=DATA.members[n];
+    return `<div class="memrow ${n===curMember?'sel':''}" data-n="${n}">
+      <b>${n}</b> <span class="pill ${x.change||''}">${x.change||''}</span>
+      ${x.bucket?`<span class="pill b${x.bucket}">B${x.bucket}</span>`:''}
+      <div class="tag">${x.kind}${NEW?(' · in '+NEW+': '+(x.in_new||'')):''}</div></div>`;}).join("");
+  list.querySelectorAll(".memrow").forEach(el=>el.onclick=()=>{curMember=el.dataset.n;renderMembers(v,names,onlyChanged);});
+  renderDetail($("#mdetail"), curMember);
+}
+
+function pairOptions(){
+  const o=[["CUST_OLD",`${CUST} vs ${OLD}`]];
+  if(NEW){o.push(["NEW_OLD",`${NEW} vs ${OLD}`]);o.push(["CUST_NEW",`${CUST} vs ${NEW}`]);}
+  return o;
+}
+function renderDetail(el, name){
+  const x=DATA.members[name]; if(!x){el.innerHTML="";return;}
+  const opts=pairOptions();
+  let head=`<h3 style="margin:0 0 4px">${name}</h3>
+    <div class="tag">kind: ${x.kind} · change: ${x.change||'—'} ${x.bucket?('· bucket '+x.bucket):''}</div>
+    ${x.note?`<div class="note">${x.note}</div>`:''}
+    <div class="seg">${opts.map(([k,t])=>`<button data-p="${k}" class="${k===curPair?'on':''}">${t}</button>`).join("")}</div>`;
+  el.innerHTML=head+`<div id="diffhost"></div>`;
+  el.querySelectorAll(".seg button").forEach(b=>b.onclick=()=>{curPair=b.dataset.p;renderDetail(el,name);});
+  const map={CUST_OLD:[CUST,OLD],NEW_OLD:[NEW,OLD],CUST_NEW:[CUST,NEW]};
+  const [A,B]=map[curPair];
+  const aBody=x.bodies[A], bBody=x.bodies[B];
+  $("#diffhost").innerHTML=renderDiff(bBody,aBody,B,A); // base=B (right-old), A=left-new
+}
+
+/* ---------- line diff (LCS) ---------- */
+function lcsDiff(aLines,bLines){
+  const n=aLines.length,m=bLines.length;
+  const dp=Array.from({length:n+1},()=>new Int32Array(m+1));
+  for(let i=n-1;i>=0;i--)for(let j=m-1;j>=0;j--)
+    dp[i][j]=aLines[i]===bLines[j]?dp[i+1][j+1]+1:Math.max(dp[i+1][j],dp[i][j+1]);
+  const ops=[];let i=0,j=0;
+  while(i<n&&j<m){
+    if(aLines[i]===bLines[j]){ops.push(["=",aLines[i],bLines[j]]);i++;j++;}
+    else if(dp[i+1][j]>=dp[i][j+1]){ops.push(["-",aLines[i],null]);i++;}
+    else{ops.push(["+",null,bLines[j]]);j++;}
+  }
+  while(i<n){ops.push(["-",aLines[i],null]);i++;}
+  while(j<m){ops.push(["+",null,bLines[j]]);j++;}
+  return ops;
+}
+// left = version L (e.g. KBZ/new), right = version R (e.g. R21/old); highlight what L adds/removes vs R
+function renderDiff(rightBody,leftBody,Rlabel,Llabel){
+  if(leftBody==null&&rightBody==null) return "<p class='note'>Not present in either version.</p>";
+  if(leftBody==null) return `<p class='note'>Not present in ${Llabel}. (exists only in ${Rlabel})</p><pre class='mono'>${esc(rightBody||'')}</pre>`;
+  if(rightBody==null) return `<p class='note'>Not present in ${Rlabel}. (exists only in ${Llabel})</p><pre class='mono'>${esc(leftBody||'')}</pre>`;
+  const L=leftBody.split("\n"), R=rightBody.split("\n");
+  const ops=lcsDiff(L,R); // "-" = only in L (added by L), "+" = only in R (removed by L)
+  let rows="",ln=1,rn=1;
+  for(const [t,a,b] of ops){
+    if(t==="="){rows+=`<tr><td class="gut">${rn++}</td><td class="code">${esc(a)}</td></tr>`;ln++;}
+    else if(t==="-"){rows+=`<tr class="add"><td class="gut">+</td><td class="code">${esc(a)}</td></tr>`;ln++;}
+    else {rows+=`<tr class="del"><td class="gut">−</td><td class="code">${esc(b)}</td></tr>`;rn++;}
+  }
+  return `<div class="tag" style="margin:4px 0">Showing <b>${Llabel}</b> vs <b>${Rlabel}</b> —
+    <span style="background:var(--add-bg);padding:0 6px">green = in ${Llabel} only</span>
+    <span style="background:var(--del-bg);padding:0 6px">red = in ${Rlabel} only</span></div>
+    <div class="diffwrap"><table class="diff">${rows}</table></div>`;
+}
+function esc(s){return (s||"").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+
+/* ---------- 3-way table ---------- */
+function renderThreeway(v){
+  const names=Object.keys(DATA.members).filter(n=>DATA.members[n].note);
+  const rows=names.map((n,i)=>{const x=DATA.members[n];
+    const mk=l=>x.present[l]?"Y":"–";
+    return `<tr data-n="${n}"><td>${i+1}</td><td><b>${n}</b></td>
+      <td style="text-align:center">${mk(OLD)}</td><td style="text-align:center">${mk(CUST)}</td><td style="text-align:center">${mk(NEW)}</td>
+      <td class="b${x.bucket||'q'}" style="text-align:center">${x.bucket||''}</td><td>${x.note}</td></tr>`;}).join("");
+  v.innerHTML=`<p class="note">Members with a ${CUST} delta vs ${OLD}. Click a row to inspect the diff.</p>
+    <table><tr><th>#</th><th>Member</th><th>${OLD}</th><th>${CUST}</th><th>${NEW}</th><th>Bucket</th><th>Note</th></tr>${rows}</table>`;
+  v.querySelectorAll("tr[data-n]").forEach(tr=>tr.onclick=()=>{curMember=tr.dataset.n;curTab="genuine";renderTabs();renderTab();});
+}
+
+/* ---------- checklist (editable + persisted) ---------- */
+function ckey(n){return `retrofit::${CTRL}::${n}`;}
+function getState(n){try{return JSON.parse(localStorage.getItem(ckey(n)))||{};}catch(e){return {};}}
+function setState(n,s){try{localStorage.setItem(ckey(n),JSON.stringify(s));}catch(e){}}
+function renderChecklist(v){
+  const names=DATA.genuine_changes;
+  const rows=names.map((n,i)=>{const x=DATA.members[n];const st=getState(n);
+    const sel=(field,opts)=>`<select data-n="${n}" data-f="${field}">${opts.map(o=>`<option ${st[field]===o?'selected':''}>${o}</option>`).join("")}</select>`;
+    return `<tr>
+      <td>${i+1}</td>
+      <td><b>${n}</b><div class="tag">${x.change} · in ${NEW}: ${x.in_new||''}</div></td>
+      <td class="b${x.bucket||'q'}" style="text-align:center">${x.bucket||''}</td>
+      <td>${sel("action",["","Re-apply","Reconcile","Adopt R26","Port new","Drop","Already in R26"])}</td>
+      <td>${sel("remap",["","None","Field/param remap","Signature change"])}</td>
+      <td><input data-n="${n}" data-f="layers" value="${(st.layers||'').replace(/"/g,'&quot;')}" placeholder="form/.sm, presenter…"/></td>
+      <td>${sel("risk",["","Low","Med","High"])}</td>
+      <td>${sel("status",["TODO","In progress","Done","Skipped"])}</td>
+      <td style="text-align:center"><input type="checkbox" data-n="${n}" data-f="validated" ${st.validated?'checked':''} style="width:auto"/></td>
+      <td><textarea data-n="${n}" data-f="notes" placeholder="logic / decision">${esc(st.notes||'')}</textarea></td>
+    </tr>`;}).join("");
+  v.innerHTML=`<div class="toolbar">
+      <button class="btn" id="expJson">Export JSON</button>
+      <button class="btn" id="expCsv">Export CSV</button>
+      <span class="tag">Edits auto-save to this browser (localStorage), keyed per controller + member.</span></div>
+    <table><tr><th>#</th><th>Member</th><th>Bucket</th><th>Action</th><th>Field re-map</th><th>Other layers</th><th>Risk</th><th>Status</th><th>Valid.</th><th>Notes / logic</th></tr>${rows}</table>`;
+  v.querySelectorAll("[data-f]").forEach(el=>{
+    const ev=el.type==="checkbox"?"change":"input";
+    el.addEventListener(ev,()=>{const n=el.dataset.n,f=el.dataset.f,s=getState(n);
+      s[f]=el.type==="checkbox"?el.checked:el.value; setState(n,s);});
+  });
+  $("#expJson").onclick=()=>exportChecklist("json");
+  $("#expCsv").onclick=()=>exportChecklist("csv");
+}
+function exportChecklist(fmt){
+  const rows=DATA.genuine_changes.map(n=>{const x=DATA.members[n],st=getState(n);
+    return {member:n,change:x.change,bucket:x.bucket,in_new:x.in_new,
+      action:st.action||"",remap:st.remap||"",layers:st.layers||"",risk:st.risk||"",
+      status:st.status||"TODO",validated:!!st.validated,notes:st.notes||"",note_auto:x.note||""};});
+  let blob,name;
+  if(fmt==="json"){blob=new Blob([JSON.stringify({controller:CTRL,rows},null,2)],{type:"application/json"});name=CTRL+"_retrofit.json";}
+  else{const cols=Object.keys(rows[0]||{member:1});
+    const csv=[cols.join(",")].concat(rows.map(r=>cols.map(c=>`"${String(r[c]).replace(/"/g,'""')}"`).join(","))).join("\n");
+    blob=new Blob([csv],{type:"text/csv"});name=CTRL+"_retrofit.csv";}
+  const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();
+}
+
+/* ---------- widget remap ---------- */
+function renderWidgets(v){
+  const w=DATA.widgets.filter(x=>x.remap);
+  const rows=w.map(x=>`<tr><td class="mono">${x.token}</td>${LABELS.map(l=>{const c=x.counts[l];
+    return `<td style="text-align:center;${c===0?'background:var(--del-bg)':''}">${c}</td>`;}).join("")}</tr>`).join("");
+  v.innerHTML=`<p class="note">Widgets whose presence differs across versions — a likely field/index remap or added/removed widget.
+    A <span style="background:var(--del-bg);padding:0 6px">0</span> means the widget is absent in that version (form-layer work needed).</p>
+    <table><tr><th>Widget token</th>${LABELS.map(l=>`<th>${l}</th>`).join("")}</tr>${rows}</table>
+    <p class="tag">${w.length} of ${DATA.widgets.length} widget tokens differ across versions.</p>`;
+}
+</script>
+</body>
+</html>
