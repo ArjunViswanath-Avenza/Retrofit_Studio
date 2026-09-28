@@ -239,3 +239,56 @@ export function buildModel(files) {
     hasNew: !!N,
   };
 }
+
+// ---- Bulk grouping ----
+// Group many uploaded files into per-controller sets keyed by version.
+// Supports two conventions:
+//   1. filename suffix:  frmXController_R21.js  (version = R21, base = frmXController)
+//   2. version subfolder: R21/frmXController.js (relPath contains a version dir)
+// `fileList`: [{ name, src, relPath? }]   `tokens`: e.g. ["R21","KBZ","R26"]
+export function groupFiles(fileList, tokens) {
+  const lc = tokens.map((t) => t.toLowerCase());
+  const groups = new Map(); // base -> { base, byVersion: {token: {name, src}} }
+  const unmatched = [];
+  const ensure = (base) => {
+    if (!groups.has(base)) groups.set(base, { base, byVersion: {} });
+    return groups.get(base);
+  };
+  for (const f of fileList) {
+    const nameLc = f.name.toLowerCase();
+    let matched = false;
+    // convention 1: _<token>.js suffix
+    for (let i = 0; i < tokens.length; i++) {
+      const suf = "_" + lc[i] + ".js";
+      if (nameLc.endsWith(suf)) {
+        ensure(f.name.slice(0, f.name.length - suf.length)).byVersion[tokens[i]] = f;
+        matched = true; break;
+      }
+    }
+    // convention 2: a version-named folder in the path
+    if (!matched && f.relPath) {
+      const parts = f.relPath.split(/[\/]/).map((p) => p.toLowerCase());
+      const idx = lc.findIndex((t) => parts.includes(t));
+      if (idx >= 0 && nameLc.endsWith(".js")) {
+        ensure(f.name.replace(/\.js$/i, "")).byVersion[tokens[idx]] = f;
+        matched = true;
+      }
+    }
+    if (!matched) unmatched.push(f.name);
+  }
+  // stable sort by base name
+  const list = [...groups.values()].sort((a, b) => a.base.localeCompare(b.base));
+  return { groups: list, unmatched };
+}
+
+// ---- Project-folder helpers ----
+// A main controller file (frmXController.js), not the generated *ControllerActions.js stub.
+export function isMainController(name) {
+  return /Controller\.js$/i.test(name) && !/ControllerActions\.js$/i.test(name);
+}
+// Matching key across projects: the path *under* controllers/ (so different project roots align).
+export function controllerKey(relPath) {
+  const p = (relPath || "").replace(/\\/g, "/");
+  const i = p.toLowerCase().lastIndexOf("/controllers/");
+  return i >= 0 ? p.slice(i + "/controllers/".length) : p.replace(/^.*\//, "");
+}

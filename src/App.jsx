@@ -1,12 +1,13 @@
 import { useState } from "react";
 import "./App.css";
-import { extract, buildModel } from "./lib/analyzer";
+import { extract, buildModel, groupFiles, isMainController, controllerKey } from "./lib/analyzer";
 import { TwoCol, ThreeCol } from "./components/DiffView";
 import { Checklist } from "./components/Checklist";
 
 const DEFAULT_LABELS = ["R21", "KBZ", "R26"];
 
 export default function App() {
+  const [mode, setMode] = useState("single");
   const [slots, setSlots] = useState([
     { label: "R21", name: "", src: "" },
     { label: "KBZ", name: "", src: "" },
@@ -17,6 +18,56 @@ export default function App() {
   const [member, setMember] = useState(null);
   const [view, setView] = useState("OLD_CUST");
   const [err, setErr] = useState("");
+
+  // bulk mode
+  const [tokens, setTokens] = useState(["R21", "KBZ", "R26"]);
+  const [bulkFiles, setBulkFiles] = useState([]); // [{name, src, relPath}]
+  const [bulk, setBulk] = useState(null);          // { results, unmatched }
+  const [drill, setDrill] = useState(null);        // index into bulk.results
+
+  // project-folders mode
+  const [projFiles, setProjFiles] = useState([[], [], []]); // per version: [{key,name,src}]
+  const [progress, setProgress] = useState(null);  // {done,total,running}
+
+  const onProjectFolder = (i, fileList) => {
+    const mains = [...fileList].filter((f) => isMainController(f.name));
+    Promise.all(mains.map((f) => new Promise((res) => {
+      const r = new FileReader();
+      r.onload = () => res({ key: controllerKey(f.webkitRelativePath || f.name), name: f.name, src: r.result });
+      r.readAsText(f);
+    }))).then((list) => setProjFiles((prev) => { const c = [...prev]; c[i] = list; return c; }));
+  };
+
+  const analyzeProjects = async () => {
+    setErr("");
+    const toks = tokens.map((t) => t.trim()).filter(Boolean);
+    const [BASE, CUST, NEW] = toks;
+    const maps = projFiles.map((arr) => new Map(arr.map((x) => [x.key, x])));
+    const keys = [...new Set(projFiles.flatMap((arr) => arr.map((x) => x.key)))].sort();
+    const results = [];
+    setProgress({ done: 0, total: keys.length, running: true });
+    for (let idx = 0; idx < keys.length; idx++) {
+      const key = keys[idx];
+      const name = key.split("/").pop().replace(/\.js$/, "");
+      const present = toks.filter((t, k) => maps[k] && maps[k].has(key));
+      const base = maps[0] && maps[0].get(key), cust = maps[1] && maps[1].get(key), nw = maps[2] && maps[2].get(key);
+      if (!base || !cust) {
+        results.push({ base: name, path: key, incomplete: true, present });
+      } else {
+        try {
+          const files = [[BASE, base], [CUST, cust], [NEW, nw]].filter(([t, f]) => t && f)
+            .map(([t, f]) => ({ label: t, name: f.name, src: f.src, parsed: extract(f.src) }));
+          results.push({ base: name, path: key, model: buildModel(files), present });
+        } catch (e) {
+          results.push({ base: name, path: key, error: String(e.message || e), present });
+        }
+      }
+      if (idx % 8 === 0) { setProgress({ done: idx + 1, total: keys.length, running: true }); await new Promise((r) => setTimeout(r)); }
+    }
+    setProgress({ done: keys.length, total: keys.length, running: false });
+    setBulk({ results, unmatched: [] });
+    setDrill(null);
+  };
 
   const onFile = (i, file) => {
     if (!file) return;
@@ -33,7 +84,6 @@ export default function App() {
   };
 
   const setLabel = (i, v) => setSlots((s) => { const c = [...s]; c[i] = { ...c[i], label: v }; return c; });
-
   const canAnalyze = slots[0].src && slots[1].src;
 
   const analyze = () => {
@@ -52,21 +102,90 @@ export default function App() {
     }
   };
 
-  const reset = () => { setModel(null); setErr(""); };
+  const onBulkFiles = (fileList) => {
+    const js = [...fileList].filter((f) => f.name.toLowerCase().endsWith(".js"));
+    Promise.all(js.map((f) => new Promise((res) => {
+      const r = new FileReader();
+      r.onload = () => res({ name: f.name, src: r.result, relPath: f.webkitRelativePath || f.name });
+      r.readAsText(f);
+    }))).then((list) => setBulkFiles((prev) => {
+      const map = new Map(prev.map((x) => [x.relPath, x]));
+      list.forEach((x) => map.set(x.relPath, x));
+      return [...map.values()];
+    }));
+  };
+
+  const analyzeBulk = () => {
+    setErr("");
+    const toks = tokens.map((t) => t.trim()).filter(Boolean);
+    const [BASE, CUST, NEW] = toks;
+    const { groups, unmatched } = groupFiles(bulkFiles, toks);
+    const results = groups.map((g) => {
+      const present = toks.filter((t) => g.byVersion[t]);
+      if (!g.byVersion[BASE] || !g.byVersion[CUST]) return { base: g.base, incomplete: true, present };
+      try {
+        const files = [BASE, CUST, NEW].filter((t) => t && g.byVersion[t]).map((t) => {
+          const f = g.byVersion[t];
+          return { label: t, name: f.name, src: f.src, parsed: extract(f.src) };
+        });
+        return { base: g.base, model: buildModel(files), present };
+      } catch (e) {
+        return { base: g.base, error: String(e.message || e), present };
+      }
+    });
+    setBulk({ results, unmatched });
+    setDrill(null);
+  };
+
+  const openDrill = (i) => { setDrill(i); setTab("overview"); setView("OLD_CUST"); setMember(bulk.results[i].model.genuine[0] || null); };
+
+  const reset = () => { setModel(null); setBulk(null); setDrill(null); setErr(""); setProgress(null); };
+
+  const busy = model || bulk;
+  const projCounts = projFiles.map((a) => a.length);
 
   return (
     <div className="app">
       <header>
         <h1>Retrofit Studio</h1>
-        <span className="meta">{model ? model.names.join("  •  ") : "Format + compare Kony/Temenos controllers"}</span>
+        <span className="meta">
+          {model ? model.names.join("  •  ")
+            : bulk ? `${bulk.results.length} controllers`
+              : "Format + compare Kony/Temenos controllers"}
+        </span>
         <span className="spacer" />
-        {model && <button className="btn ghost" onClick={reset}>New comparison</button>}
+        {busy && <button className="btn ghost" onClick={reset}>New</button>}
       </header>
       <main>
-        {!model ? (
-          <Uploader slots={slots} onFile={onFile} setLabel={setLabel} canAnalyze={canAnalyze} analyze={analyze} err={err} />
-        ) : (
+        {model ? (
           <Report model={model} tab={tab} setTab={setTab} member={member} setMember={setMember} view={view} setView={setView} />
+        ) : bulk ? (
+          drill != null ? (
+            <div>
+              <button className="btn ghost" onClick={() => setDrill(null)} style={{ marginBottom: 10 }}>← All controllers</button>
+              <h2 style={{ margin: "0 0 8px" }}>{bulk.results[drill].base}</h2>
+              <Report model={bulk.results[drill].model} tab={tab} setTab={setTab} member={member} setMember={setMember} view={view} setView={setView} />
+            </div>
+          ) : (
+            <Dashboard bulk={bulk} tokens={tokens.map((t) => t.trim()).filter(Boolean)} openDrill={openDrill} />
+          )
+        ) : (
+          <div>
+            <div className="seg" style={{ marginBottom: 12 }}>
+              <button className={mode === "single" ? "on" : ""} onClick={() => setMode("single")}>Single controller</button>
+              <button className={mode === "projects" ? "on" : ""} onClick={() => setMode("projects")}>Project folders</button>
+              <button className={mode === "bulk" ? "on" : ""} onClick={() => setMode("bulk")}>Loose files</button>
+            </div>
+            {mode === "single" ? (
+              <Uploader slots={slots} onFile={onFile} setLabel={setLabel} canAnalyze={canAnalyze} analyze={analyze} err={err} />
+            ) : mode === "projects" ? (
+              <ProjectUploader tokens={tokens} setTokens={setTokens} counts={projCounts} onFolder={onProjectFolder}
+                clear={() => setProjFiles([[], [], []])} analyze={analyzeProjects} progress={progress} err={err} />
+            ) : (
+              <BulkUploader tokens={tokens} setTokens={setTokens} bulkFiles={bulkFiles} onBulkFiles={onBulkFiles}
+                clearBulk={() => setBulkFiles([])} analyzeBulk={analyzeBulk} err={err} />
+            )}
+          </div>
         )}
       </main>
     </div>
@@ -274,6 +393,234 @@ function Widgets({ model }) {
         </tbody>
       </table>
       <p className="tag">{w.length} of {model.widgets.length} widget tokens differ across versions.</p>
+    </div>
+  );
+}
+
+function BulkUploader({ tokens, setTokens, bulkFiles, onBulkFiles, clearBulk, analyzeBulk, err }) {
+  const toks = tokens.map((t) => t.trim()).filter(Boolean);
+  const { groups, unmatched } = groupFiles(bulkFiles, toks);
+  const [BASE, CUST] = toks;
+  const complete = groups.filter((g) => g.byVersion[BASE] && g.byVersion[CUST]).length;
+  const setTok = (i, v) => setTokens((t) => { const c = [...t]; c[i] = v; return c; });
+  const titles = ["Base (old)", "Custom", "New base (optional)"];
+
+  return (
+    <div className="uploader">
+      <div className="rules">
+        Upload a <b>whole set of controllers</b> at once (pick a folder, or many <code>.js</code> files). They're grouped
+        into version triples by filename suffix (<code>frmX_R21.js</code>) or by version-named sub-folders, then each
+        controller is formatted &amp; compared. Everything runs in your browser.
+      </div>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(3,1fr)" }}>
+        {titles.map((t, i) => (
+          <div className="slot filled" key={i} style={{ borderStyle: "solid" }}>
+            <h3>{t} — version token</h3>
+            <input type="text" value={tokens[i] || ""} onChange={(e) => setTok(i, e.target.value)} placeholder="e.g. R21" />
+          </div>
+        ))}
+      </div>
+      <div style={{ margin: "12px 0", display: "flex", gap: 16, flexWrap: "wrap", alignItems: "center" }}>
+        <label className="btn" style={{ cursor: "pointer" }}>
+          Choose folder
+          <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onBulkFiles(e.target.files)} />
+        </label>
+        <label className="btn ghost" style={{ cursor: "pointer", color: "var(--accent)", border: "1px solid var(--line)" }}>
+          Choose files
+          <input type="file" accept=".js" multiple style={{ display: "none" }} onChange={(e) => onBulkFiles(e.target.files)} />
+        </label>
+        <span className="tag">{bulkFiles.length} .js file(s) loaded · {groups.length} controller(s) detected · {complete} complete</span>
+        {bulkFiles.length > 0 && <button className="btn ghost" style={{ color: "var(--accent)", border: "1px solid var(--line)" }} onClick={clearBulk}>Clear</button>}
+      </div>
+
+      {groups.length > 0 && (
+        <div style={{ maxHeight: 260, overflow: "auto", marginBottom: 12 }}>
+          <table>
+            <thead><tr><th>Controller</th>{toks.map((t) => <th key={t}>{t}</th>)}<th>Status</th></tr></thead>
+            <tbody>
+              {groups.map((g) => {
+                const ok = g.byVersion[BASE] && g.byVersion[CUST];
+                return (
+                  <tr key={g.base}>
+                    <td><b>{g.base}</b></td>
+                    {toks.map((t) => <td key={t} style={{ textAlign: "center" }}>{g.byVersion[t] ? "✓" : "–"}</td>)}
+                    <td>{ok ? <span className="pill Added">ready</span> : <span className="pill Removed">missing {BASE}/{CUST}</span>}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {unmatched.length > 0 && <div className="tag" style={{ marginBottom: 8 }}>Unmatched (no version token): {unmatched.join(", ")}</div>}
+
+      <button className="btn" disabled={complete === 0} onClick={analyzeBulk}>Analyze {complete} controller{complete === 1 ? "" : "s"}</button>
+      {err && <div style={{ color: "#e0533d", marginTop: 8 }}>{err}</div>}
+    </div>
+  );
+}
+
+function ProjectUploader({ tokens, setTokens, counts, onFolder, clear, analyze, progress, err }) {
+  const setTok = (i, v) => setTokens((t) => { const c = [...t]; c[i] = v; return c; });
+  const titles = ["Base (old)", "Custom", "New base (optional)"];
+  const running = progress && progress.running;
+  const canAnalyze = counts[0] > 0 && counts[1] > 0 && !running;
+  return (
+    <div className="uploader">
+      <div className="rules">
+        Point at the <b>three project folders</b> (each a full Kony/Temenos project). The tool walks each folder, finds every
+        <code>*Controller.js</code>, matches them across projects by their path under <code>controllers/</code>, then formats
+        &amp; compares each one. Everything runs in your browser — nothing is uploaded.
+      </div>
+      <div className="folders">
+        {titles.map((t, i) => (
+          <div key={i} className={"folder" + (counts[i] > 0 ? " filled" : "")}>
+            <h3>{t}</h3>
+            <input type="text" value={tokens[i] || ""} onChange={(e) => setTok(i, e.target.value)} placeholder="label e.g. R21" style={{ width: 130, textAlign: "center" }} />
+            <div className="cnt">{counts[i]}</div><div className="cl">controllers</div>
+            <label className="pick">Choose folder
+              <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onFolder(i, e.target.files)} />
+            </label>
+          </div>
+        ))}
+      </div>
+      <div className="toolbar">
+        <button className="btn" disabled={!canAnalyze} onClick={analyze}>
+          {running ? `Analyzing… ${progress.done}/${progress.total}` : "Analyze project"}
+        </button>
+        {counts[0] + counts[1] + counts[2] > 0 && <button className="chip" onClick={clear}>Clear</button>}
+        <span className="tag">Base + Custom required · New base optional.</span>
+      </div>
+      {progress && <div className="progress"><div style={{ width: (progress.total ? (progress.done / progress.total) * 100 : 0) + "%" }} /></div>}
+      {err && <div style={{ color: "#e0533d" }}>{err}</div>}
+    </div>
+  );
+}
+
+function Dashboard({ bulk, tokens, openDrill }) {
+  const [BASE, CUST] = tokens;
+  const [q, setQ] = useState("");
+  const [onlyChanged, setOnlyChanged] = useState(true);
+  const [sort, setSort] = useState({ key: "changes", dir: "desc" });
+
+  const rows = bulk.results.map((r, i) => {
+    const bc = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    if (r.model) Object.values(r.model.members).forEach((x) => { if (x.bucket && bc[x.bucket] !== undefined) bc[x.bucket]++; });
+    return { ...r, i, changes: r.model ? r.model.genuine.length : 0, conflicts: bc[2], customOnly: bc[4], bc };
+  });
+  const okRows = rows.filter((r) => r.model);
+  const agg = {
+    total: bulk.results.length, analyzed: okRows.length,
+    changes: okRows.reduce((s, r) => s + r.changes, 0),
+    conflicts: okRows.reduce((s, r) => s + r.conflicts, 0),
+    customOnly: okRows.reduce((s, r) => s + r.customOnly, 0),
+    changed: okRows.filter((r) => r.changes > 0).length,
+  };
+
+  let viewRows = rows.filter((r) => (!onlyChanged || r.changes > 0) && (!q || r.base.toLowerCase().includes(q.toLowerCase())));
+  const dir = sort.dir === "asc" ? 1 : -1;
+  viewRows = [...viewRows].sort((a, b) => sort.key === "name"
+    ? dir * a.base.localeCompare(b.base)
+    : dir * ((a[sort.key] || 0) - (b[sort.key] || 0)) || a.base.localeCompare(b.base));
+
+  const top = okRows.filter((r) => r.changes > 0).sort((a, b) => b.changes - a.changes).slice(0, 10);
+  const maxC = Math.max(1, ...top.map((r) => r.changes));
+  const setSortKey = (key) => setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
+  const arrow = (key) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
+
+  const exportCsv = () => {
+    const out = [["controller", "path", "member", "change", "bucket", "in_new", "note"]];
+    okRows.forEach((r) => r.model.genuine.forEach((n) => {
+      const x = r.model.members[n];
+      out.push([r.base, r.path || "", n, x.change, x.bucket, x.inNew || "", (x.note || "").replace(/\s+/g, " ")]);
+    }));
+    const csv = out.map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+    a.download = "all_controllers_changes.csv"; a.click();
+  };
+
+  const BucketBar = ({ bc }) => {
+    const tot = [1, 2, 3, 4, 5].reduce((s, k) => s + bc[k], 0) || 1;
+    return (
+      <span className="bucketbar" title={`clean:${bc[1]} conflict:${bc[2]} in-new:${bc[3]} custom-only:${bc[4]} new-only:${bc[5]}`}>
+        {[1, 2, 3, 4, 5].map((k) => bc[k] > 0 ? <i key={k} className={"s" + k} style={{ width: (bc[k] / tot) * 120 + "px" }} /> : null)}
+      </span>
+    );
+  };
+
+  return (
+    <div>
+      <div className="cards">
+        <div className="card"><div className="n">{agg.total}</div><div className="l">controllers</div></div>
+        <div className="card"><div className="n">{agg.changed}</div><div className="l">customised ({CUST}≠{BASE})</div></div>
+        <div className="card"><div className="n">{agg.changes}</div><div className="l">total changes</div></div>
+        <div className="card"><div className="n" style={{ color: "var(--chg-mark)" }}>{agg.conflicts}</div><div className="l">conflicts (bucket 2)</div></div>
+        <div className="card"><div className="n">{agg.customOnly}</div><div className="l">custom-only (bucket 4)</div></div>
+      </div>
+
+      {top.length > 0 && (
+        <div className="chart">
+          <div className="tag" style={{ marginBottom: 2 }}>Top controllers by change volume — click to open</div>
+          {top.map((r) => (
+            <div className="row" key={r.base}>
+              <span className="cname" onClick={() => openDrill(r.i)} title={r.base}>{r.base}</span>
+              <span className="bar" style={{ width: (r.changes / maxC) * 100 + "%" }} />
+              <span style={{ textAlign: "right" }}>{r.changes}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="searchbar">
+        <input type="text" placeholder="Search controllers…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <span className={"chip" + (onlyChanged ? " on" : "")} onClick={() => setOnlyChanged((v) => !v)}>
+          {onlyChanged ? "✓ " : ""}only changed
+        </span>
+        <span className="tag">{viewRows.length} shown</span>
+        <span className="spacer" style={{ flex: 1 }} />
+        <button className="btn" onClick={exportCsv}>Export changes (CSV)</button>
+      </div>
+
+      <div className="view" style={{ borderRadius: 10, border: "1px solid var(--line)", maxHeight: "62vh", overflow: "auto" }}>
+        <table>
+          <thead>
+            <tr>
+              <th className="sortable" onClick={() => setSortKey("name")}>Controller{arrow("name")}</th>
+              {tokens.map((t) => <th key={t} style={{ textAlign: "center" }}>{t}</th>)}
+              <th className="sortable" style={{ textAlign: "center" }} onClick={() => setSortKey("changes")}>Changes{arrow("changes")}</th>
+              <th className="sortable" style={{ textAlign: "center" }} onClick={() => setSortKey("conflicts")}>Conflicts{arrow("conflicts")}</th>
+              <th>Buckets</th><th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {viewRows.map((r) => {
+              const clickable = !!r.model;
+              return (
+                <tr key={r.path || r.base} className={clickable ? "clickable" : ""} style={{ cursor: clickable ? "pointer" : "default" }} onClick={() => clickable && openDrill(r.i)}>
+                  <td><b style={{ color: clickable ? "var(--accent)" : "inherit" }}>{r.base}</b>{r.path && <div className="tag" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.path}</div>}</td>
+                  {tokens.map((t) => <td key={t} style={{ textAlign: "center" }}>{(r.present || []).includes(t) ? "✓" : "–"}</td>)}
+                  <td style={{ textAlign: "center", fontWeight: 700 }}>{r.model ? r.changes : "—"}</td>
+                  <td style={{ textAlign: "center", color: r.conflicts ? "var(--chg-mark)" : "inherit" }}>{r.model ? r.conflicts : "—"}</td>
+                  <td>{r.model ? <BucketBar bc={r.bc} /> : "—"}</td>
+                  <td>
+                    {r.model ? <span className="pill Added">ok</span>
+                      : r.incomplete ? <span className="pill Modified">missing version</span>
+                        : <span className="pill Removed">parse error</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <p className="tag" style={{ marginTop: 8 }}>
+        Buckets: <span className="chip s1" style={{ background: "var(--add-mark)", color: "#000" }}>1 clean</span>{" "}
+        <span className="chip" style={{ background: "var(--chg-mark)", color: "#000" }}>2 conflict</span>{" "}
+        <span className="chip" style={{ background: "#7fb0ff", color: "#000" }}>3 in-new</span>{" "}
+        <span className="chip" style={{ background: "#9ad0a5", color: "#000" }}>4 custom-only</span>{" "}
+        <span className="chip" style={{ background: "#c9d3e0", color: "#000" }}>5 new-only</span>
+      </p>
     </div>
   );
 }
