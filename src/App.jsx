@@ -3,6 +3,7 @@ import "./App.css";
 import { extract, buildModel, isMainController, controllerKey } from "./lib/analyzer";
 import { TwoCol, ThreeCol } from "./components/DiffView";
 import { Checklist } from "./components/Checklist";
+import { FormsView } from "./components/Forms";
 
 const LABELS = ["R21", "KBZ", "R26"];
 const PROJ_META = [
@@ -14,7 +15,10 @@ const PROJ_META = [
 // menu: only "controllers" is functional; others are work-in-progress
 const MENU = [
   { id: "home", ico: "◧", label: "Project Overview", desc: "Counts across R21 · KBZ · R26" },
-  { id: "forms", ico: "▤", label: "FormForge", desc: "Forms retrofit", wip: true },
+  {
+    id: "forms", ico: "▤", label: "FormForge", desc: "Forms retrofit",
+    items: [{ id: "forms", label: "Form comparison", ready: true }],
+  },
   {
     id: "controllers", ico: "⚙", label: "CtrlSync", desc: "Form-level controllers",
     items: [{ id: "controllers", label: "Controller comparison", ready: true }],
@@ -26,14 +30,18 @@ const MENU = [
 function scanFolder(fileList) {
   const files = [...fileList];
   const rel = (f) => (f.webkitRelativePath || f.name).replace(/\\/g, "/");
-  const sm = new Set();
+  const forms = new Map(); // formKey (path under forms/, ending ".sm") -> Map(widgetId -> File)
   let business = 0, presentation = 0;
   const controllers = new Map();
   for (const f of files) {
     const p = rel(f), lp = p.toLowerCase();
-    if (lp.includes("/forms/")) {
-      const m = lp.match(/(.*?\/[^/]+\.sm)(\/|$)/);
-      if (m) sm.add(m[1]);
+    const fi = lp.indexOf("/forms/");
+    if (fi >= 0 && lp.endsWith(".json")) {
+      const m = p.slice(fi + 7).match(/^(.*?\.sm)\/([^/]+)\.json$/i);
+      if (m) {
+        if (!forms.has(m[1])) forms.set(m[1], new Map());
+        forms.get(m[1]).set(m[2], f);
+      }
     }
     if (lp.includes("/mvcextensions/") && lp.endsWith(".js")) {
       if (lp.includes("/businesscontrollers/")) business++;
@@ -41,7 +49,7 @@ function scanFolder(fileList) {
     }
     if (lp.includes("/controllers/") && isMainController(f.name)) controllers.set(controllerKey(p), f);
   }
-  return { fileCount: files.length, counts: { forms: sm.size, controllers: controllers.size, business, presentation }, controllers };
+  return { fileCount: files.length, counts: { forms: forms.size, controllers: controllers.size, business, presentation }, controllers, forms };
 }
 
 export default function App() {
@@ -49,11 +57,12 @@ export default function App() {
   const [entered, setEntered] = useState(false);
   const [side, setSide] = useState(true);       // sidebar expanded
   const [nav, setNav] = useState("home");
-  const [openGroup, setOpenGroup] = useState("controllers");
+  const [openGroups, setOpenGroups] = useState(new Set(["forms", "controllers"]));
 
   // controller analysis (lazy)
   const [bulk, setBulk] = useState(null);
   const [analyzing, setAnalyzing] = useState(null);
+  const [formScan, setFormScan] = useState({}); // per version-pair form property scan (kept across menu navigation)
   const [drill, setDrill] = useState(null);
   const [tab, setTab] = useState("overview");
   const [member, setMember] = useState(null);
@@ -99,7 +108,7 @@ export default function App() {
 
   const openDrill = (i) => { setDrill(i); setTab("overview"); setView("OLD_CUST"); setMember(bulk.results[i].model.genuine[0] || null); };
 
-  const goHome = () => { setEntered(false); setPicked([null, null, null]); setBulk(null); setDrill(null); setAnalyzing(null); setNav("home"); };
+  const goHome = () => { setEntered(false); setPicked([null, null, null]); setBulk(null); setDrill(null); setAnalyzing(null); setFormScan({}); setNav("home"); };
 
   return (
     <div>
@@ -120,10 +129,10 @@ export default function App() {
         </div>
       ) : (
         <div className={"shell" + (side ? "" : " side-collapsed")}>
-          <Sidebar side={side} nav={nav} setNav={setNav} openGroup={openGroup} setOpenGroup={setOpenGroup} projects={picked} />
+          <Sidebar side={side} nav={nav} setNav={setNav} openGroups={openGroups} setOpenGroups={setOpenGroups} projects={picked} />
           <div className="content">
             {nav === "home" && <Home picked={picked} goto={setNav} />}
-            {nav === "forms" && <Wip title="FormForge — Forms Retrofit" icon="▤" />}
+            {nav === "forms" && <FormsView picked={picked} labels={LABELS} scan={formScan} setScan={setFormScan} />}
             {nav === "mvc" && <Wip title="MVC Bridge — Business & Presentation Retrofit" icon="❏" />}
             {nav === "controllers" && (
               drill != null && bulk ? (
@@ -157,18 +166,21 @@ export default function App() {
   );
 }
 
-function Sidebar({ side, nav, setNav, openGroup, setOpenGroup, projects }) {
+function Sidebar({ side, nav, setNav, openGroups, setOpenGroups, projects }) {
   return (
     <div className={"side" + (side ? "" : " collapsed")}>
       <div className="menu">
         {MENU.map((m) => {
           const hasItems = !!m.items;
-          const isOpen = openGroup === m.id;
+          const isOpen = openGroups.has(m.id);
           const active = nav === m.id;
           return (
             <div key={m.id} className={"mgroup" + (isOpen ? " open" : "")}>
               <div className={"mhead" + (active ? " active" : "")}
-                onClick={() => { if (hasItems) { setOpenGroup(isOpen ? "" : m.id); } else if (!m.wip) { setNav(m.id); } else { setNav(m.id); } }}>
+                onClick={() => {
+                  if (hasItems) setOpenGroups((s) => { const c = new Set(s); if (c.has(m.id)) c.delete(m.id); else c.add(m.id); return c; });
+                  else setNav(m.id);
+                }}>
                 <span className="ico">{m.ico}</span>
                 <span className="lbl">{m.label}<div style={{ fontSize: 12.5, fontWeight: 400, color: "var(--side-muted)" }}>{m.desc}</div></span>
                 {m.wip && <span className="wip">WIP</span>}
@@ -235,7 +247,7 @@ function Home({ picked, goto }) {
   return (
     <div>
       <h2 className="page">Project Overview</h2>
-      <div className="crumb">Inventory across the three projects — click “Controller Retrofit” in the menu to compare.</div>
+      <div className="crumb">Inventory across the three projects — open FormForge or CtrlSync from the menu to compare.</div>
       <div className="projgrid">
         {PROJ_META.map((meta, i) => (
           <div key={meta.key} className={"projcard " + meta.key}>
@@ -255,6 +267,7 @@ function Home({ picked, goto }) {
         ))}
       </div>
       <div style={{ marginTop: 18 }}>
+        <button className="btn" onClick={() => goto("forms")}>Compare forms →</button>{" "}
         <button className="btn" onClick={() => goto("controllers")}>Analyze controller retrofit →</button>
       </div>
     </div>
