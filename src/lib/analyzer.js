@@ -216,7 +216,9 @@ export function buildModel(files) {
       } else inNew = "absent";
     }
     const kind = files.find((f) => name in f.parsed.members).parsed.members[name].kind;
-    members[name] = { kind, present, bodies, change, bucket, note, inNew };
+    const dups = {};
+    for (const f of files) { const d = f.parsed.members[name]?.dups; if (d > 1) dups[f.label] = d; }
+    members[name] = { kind, present, bodies, change, bucket, note, inNew, dups };
     if (change) genuine.push(name);
   }
 
@@ -291,4 +293,89 @@ export function controllerKey(relPath) {
   const p = (relPath || "").replace(/\\/g, "/");
   const i = p.toLowerCase().lastIndexOf("/controllers/");
   return i >= 0 ? p.slice(i + "/controllers/".length) : p.replace(/^.*\//, "");
+}
+
+// ---- MVC extensions (Business / Presentation controllers) ----
+// These are AMD factories: define([], function(){ function X(){...} inheritsFrom(X, ...);
+// X.prototype.m = function(){...}; ... return X; }). The *_Extn.js files instead use the
+// define({ m: function(){...} }) object form. Both are reduced to the same member shape
+// ({kind, raw, fmt, canon}) the form-controller engine uses, so buildModel/classify apply.
+function walkAst(node, fn) {
+  if (!node || typeof node.type !== "string") return;
+  fn(node);
+  for (const k in node) {
+    const v = node[k];
+    if (Array.isArray(v)) v.forEach((c) => walkAst(c, fn));
+    else if (v && typeof v.type === "string") walkAst(v, fn);
+  }
+}
+
+export function extractModule(src) {
+  src = (src || "").replace(/\r\n?/g, "\n").replace(/^\ufeff/, "");
+  let ast;
+  try {
+    ast = parse(src, { ecmaVersion: "latest", allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+  } catch (e) {
+    throw new Error("Parse error: " + e.message);
+  }
+  let moduleName = null;
+  const members = {};
+  const put = (name, kind, raw) => {
+    const f = fmt(raw);
+    const prev = members[name];
+    // a name defined twice: at runtime the LATER definition wins — keep it, and count the duplicates
+    members[name] = { kind, raw, fmt: f, canon: canonOf(f), dups: prev ? (prev.dups || 1) + 1 : 1 };
+  };
+
+  // 1) X.prototype.m = <value>   (anywhere in the file)
+  walkAst(ast, (n) => {
+    if (n.type !== "AssignmentExpression" || n.left.type !== "MemberExpression") return;
+    const L = n.left;
+    if (L.object.type === "MemberExpression" && !L.object.computed && L.object.property.name === "prototype") {
+      const name = L.property.name ?? L.property.value;
+      if (name == null) return;
+      if (!moduleName && L.object.object.type === "Identifier") moduleName = L.object.object.name;
+      put(String(name), FUNC.has(n.right.type) ? "method" : "field", src.slice(n.right.start, n.right.end));
+    }
+  });
+
+  // 2) define(...) — object form (members) or factory form (private functions / module vars)
+  for (const node of ast.body) {
+    if (node.type !== "ExpressionStatement" || node.expression.type !== "CallExpression") continue;
+    const call = node.expression;
+    if (!call.callee || call.callee.name !== "define") continue;
+    for (const a of call.arguments) {
+      if (a.type === "ObjectExpression") {
+        for (const p of a.properties) {
+          if (p.type !== "Property") continue;
+          const key = p.key.name !== undefined ? p.key.name : p.key.value;
+          if (key == null) continue;
+          put(String(key), FUNC.has(p.value.type) ? "method" : "field", src.slice(p.value.start, p.value.end));
+        }
+      } else if (FUNC.has(a.type) && a.body && a.body.type === "BlockStatement") {
+        for (const st of a.body.body) {
+          if (st.type === "FunctionDeclaration" && st.id) {
+            put(`ƒ ${st.id.name}`, "method", src.slice(st.start, st.end)); // constructor + private helpers
+          } else if (st.type === "VariableDeclaration") {
+            for (const d of st.declarations) if (d.id.type === "Identifier") put(`var ${d.id.name}`, "field", src.slice(d.start, d.end));
+          }
+        }
+      }
+    }
+  }
+  return { moduleName, members };
+}
+
+// A Business/Presentation controller file (not other scripts that may sit in mvcextensions).
+export function isMvcController(relPath) {
+  return /\/(Business|Presentation)Controllers\/[^/]+\.js$/i.test("/" + relPath.replace(/\\/g, "/"));
+}
+export function mvcKey(relPath) {
+  const p = "/" + (relPath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  const i = p.toLowerCase().lastIndexOf("/mvcextensions/");
+  return i >= 0 ? p.slice(i + "/mvcextensions/".length) : p.slice(1);
+}
+export function mvcKind(key) {
+  if (/_Extn\.js$/i.test(key)) return "Extension";
+  return /\/BusinessControllers\//i.test("/" + key) ? "Business" : "Presentation";
 }

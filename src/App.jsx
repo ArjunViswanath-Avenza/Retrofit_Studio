@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import "./App.css";
-import { extract, buildModel, isMainController, controllerKey } from "./lib/analyzer";
+import { extract, extractModule, buildModel, isMainController, controllerKey, isMvcController, mvcKey, mvcKind } from "./lib/analyzer";
 import { TwoCol, ThreeCol } from "./components/DiffView";
 import { Checklist } from "./components/Checklist";
 import { FormsView } from "./components/Forms";
@@ -23,7 +23,10 @@ const MENU = [
     id: "controllers", ico: "⚙", label: "CtrlSync", desc: "Form-level controllers",
     items: [{ id: "controllers", label: "Controller comparison", ready: true }],
   },
-  { id: "mvc", ico: "❏", label: "MVC Bridge", desc: "Business & Presentation controllers", wip: true },
+  {
+    id: "mvc", ico: "❏", label: "MVC Bridge", desc: "Business & Presentation controllers",
+    items: [{ id: "mvc", label: "Business & Presentation comparison", ready: true }],
+  },
 ];
 
 // scan a picked project folder (from FileList) — counts only, no file reads
@@ -33,6 +36,7 @@ function scanFolder(fileList) {
   const forms = new Map(); // formKey (path under forms/, ending ".sm") -> Map(widgetId -> File)
   let business = 0, presentation = 0;
   const controllers = new Map();
+  const mvc = new Map(); // <Module>/<Business|Presentation>Controllers/*.js -> File
   for (const f of files) {
     const p = rel(f), lp = p.toLowerCase();
     const fi = lp.indexOf("/forms/");
@@ -46,10 +50,35 @@ function scanFolder(fileList) {
     if (lp.includes("/mvcextensions/") && lp.endsWith(".js")) {
       if (lp.includes("/businesscontrollers/")) business++;
       else if (lp.includes("/presentationcontrollers/")) presentation++;
+      if (isMvcController(p)) mvc.set(mvcKey(p), f);
     }
     if (lp.includes("/controllers/") && isMainController(f.name)) controllers.set(controllerKey(p), f);
   }
-  return { fileCount: files.length, counts: { forms: forms.size, controllers: controllers.size, business, presentation }, controllers, forms };
+  return { fileCount: files.length, counts: { forms: forms.size, controllers: controllers.size, business, presentation }, controllers, forms, mvc };
+}
+
+// Match files across R21/KBZ/R26 by key, then extract + compare each (shared by CtrlSync and MVC Bridge).
+async function analyzeSets(maps, extractor, meta, onProgress) {
+  const keys = [...new Set(maps.flatMap((m) => [...m.keys()]))].sort();
+  onProgress({ done: 0, total: keys.length, running: true });
+  const results = [];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const base = { path: key, ...meta(key) };
+    const fs = LABELS.map((l, k) => [l, maps[k].get(key)]);
+    const present = fs.filter(([, f]) => f).map(([l]) => l);
+    if (!fs[0][1] || !fs[1][1]) results.push({ ...base, incomplete: true, present });
+    else {
+      try {
+        const files = [];
+        for (const [label, f] of fs) if (f) { const src = await f.text(); files.push({ label, name: key, src, parsed: extractor(src) }); }
+        results.push({ ...base, model: buildModel(files), present });
+      } catch (e) { results.push({ ...base, error: String(e.message || e), present }); }
+    }
+    if (i % 5 === 0) { onProgress({ done: i + 1, total: keys.length, running: true }); await new Promise((r) => setTimeout(r)); }
+  }
+  onProgress({ done: keys.length, total: keys.length, running: false });
+  return results;
 }
 
 export default function App() {
@@ -64,6 +93,9 @@ export default function App() {
   const [analyzing, setAnalyzing] = useState(null);
   const [formScan, setFormScan] = useState({}); // per version-pair form property scan (kept across menu navigation)
   const [drill, setDrill] = useState(null);
+  const [mvcBulk, setMvcBulk] = useState(null);
+  const [mvcAnalyzing, setMvcAnalyzing] = useState(null);
+  const [mvcDrill, setMvcDrill] = useState(null);
   const [tab, setTab] = useState("overview");
   const [member, setMember] = useState(null);
   const [view, setView] = useState("OLD_CUST");
@@ -75,40 +107,28 @@ export default function App() {
   const canEnter = picked[0] && picked[1];
 
   const runControllers = async () => {
-    setAnalyzing({ done: 0, total: 0, running: true });
-    const maps = picked.map((p) => (p ? p.controllers : new Map()));
-    const keys = [...new Set(maps.flatMap((m) => [...m.keys()]))].sort();
-    setAnalyzing({ done: 0, total: keys.length, running: true });
-    const readText = (file) => new Promise((res) => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsText(file); });
-    const results = [];
-    for (let i = 0; i < keys.length; i++) {
-      const key = keys[i], name = key.split("/").pop().replace(/\.js$/, "");
-      const fs = LABELS.map((l, k) => [l, maps[k].get(key)]);
-      const present = fs.filter(([, f]) => f).map(([l]) => l);
-      const [, bf] = fs[0], [, cf] = fs[1];
-      if (!bf || !cf) { results.push({ base: name, path: key, incomplete: true, present }); }
-      else {
-        try {
-          const files = [];
-          for (const [label, f] of fs) if (f) { const src = await readText(f); files.push({ label, name: key, src, parsed: extract(src) }); }
-          results.push({ base: name, path: key, model: buildModel(files), present });
-        } catch (e) { results.push({ base: name, path: key, error: String(e.message || e), present }); }
-      }
-      if (i % 5 === 0) { setAnalyzing({ done: i + 1, total: keys.length, running: true }); await new Promise((r) => setTimeout(r)); }
-    }
-    setAnalyzing({ done: keys.length, total: keys.length, running: false });
+    const results = await analyzeSets(picked.map((p) => (p ? p.controllers : new Map())), extract,
+      (k) => ({ base: k.split("/").pop().replace(/\.js$/, "") }), setAnalyzing);
     setBulk({ results, unmatched: [] });
+  };
+  const runMvc = async () => {
+    const results = await analyzeSets(picked.map((p) => (p ? p.mvc : new Map())), extractModule,
+      (k) => ({ base: k.split("/")[0], kind: mvcKind(k) }), setMvcAnalyzing);
+    setMvcBulk({ results, unmatched: [] });
   };
 
   // auto-run controller analysis the first time that view is opened
   useEffect(() => {
     if (nav === "controllers" && entered && !bulk && !(analyzing && analyzing.running)) runControllers();
+    if (nav === "mvc" && entered && !mvcBulk && !(mvcAnalyzing && mvcAnalyzing.running)) runMvc();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav, entered]);
 
   const openDrill = (i) => { setDrill(i); setTab("overview"); setView("OLD_CUST"); setMember(bulk.results[i].model.genuine[0] || null); };
+  const openMvcDrill = (i) => { setMvcDrill(i); setTab("overview"); setView("OLD_CUST"); setMember(mvcBulk.results[i].model.genuine[0] || null); };
+  const reportProps = { tab, setTab, member, setMember, view, setView };
 
-  const goHome = () => { setEntered(false); setPicked([null, null, null]); setBulk(null); setDrill(null); setAnalyzing(null); setFormScan({}); setNav("home"); };
+  const goHome = () => { setEntered(false); setPicked([null, null, null]); setBulk(null); setDrill(null); setAnalyzing(null); setFormScan({}); setMvcBulk(null); setMvcDrill(null); setMvcAnalyzing(null); setNav("home"); };
 
   return (
     <div>
@@ -133,34 +153,46 @@ export default function App() {
           <div className="content">
             {nav === "home" && <Home picked={picked} goto={setNav} />}
             {nav === "forms" && <FormsView picked={picked} labels={LABELS} scan={formScan} setScan={setFormScan} />}
-            {nav === "mvc" && <Wip title="MVC Bridge — Business & Presentation Retrofit" icon="❏" />}
             {nav === "controllers" && (
-              drill != null && bulk ? (
-                <div>
-                  <button className="btn ghost" onClick={() => setDrill(null)} style={{ marginBottom: 10 }}>← All controllers</button>
-                  <h2 className="page">{bulk.results[drill].base}</h2>
-                  <div className="crumb">{bulk.results[drill].path}</div>
-                  <Report model={bulk.results[drill].model} tab={tab} setTab={setTab} member={member} setMember={setMember} view={view} setView={setView} />
-                </div>
-              ) : (
-                <div>
-                  <h2 className="page">Controller Retrofit</h2>
-                  <div className="crumb">Form-level controllers · KBZ customisations carried onto R26</div>
-                  {analyzing && analyzing.running ? (
-                    <div style={{ maxWidth: 520 }}>
-                      <p className="note">Formatting &amp; comparing controllers… {analyzing.done}/{analyzing.total}</p>
-                      <div className="progress"><div style={{ width: (analyzing.total ? analyzing.done / analyzing.total * 100 : 0) + "%" }} /></div>
-                    </div>
-                  ) : bulk ? (
-                    <Dashboard bulk={bulk} tokens={LABELS} openDrill={openDrill} />
-                  ) : (
-                    <p className="note">Preparing…</p>
-                  )}
-                </div>
-              )
+              <AnalysisView title="Controller Retrofit" crumb="Form-level controllers · KBZ customisations carried onto R26" noun="controllers"
+                bulk={bulk} analyzing={analyzing} drill={drill} setDrill={setDrill} openDrill={openDrill} reportProps={reportProps} />
+            )}
+            {nav === "mvc" && (
+              <AnalysisView title="Business & Presentation Retrofit" crumb="MVC extensions · business and presentation controller logic across R21 · KBZ · R26" noun="modules"
+                bulk={mvcBulk} analyzing={mvcAnalyzing} drill={mvcDrill} setDrill={setMvcDrill} openDrill={openMvcDrill} reportProps={reportProps} showKind />
             )}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function AnalysisView({ title, crumb, noun, bulk, analyzing, drill, setDrill, openDrill, reportProps, showKind }) {
+  if (drill != null && bulk) {
+    const r = bulk.results[drill];
+    return (
+      <div>
+        <button className="btn ghost" onClick={() => setDrill(null)} style={{ marginBottom: 10 }}>← All {noun}</button>
+        <h2 className="page">{r.base}{r.kind && <span className={"kindpill k-" + r.kind}>{r.kind}</span>}</h2>
+        <div className="crumb">{r.path}</div>
+        <Report model={r.model} {...reportProps} widgets={!showKind} />
+      </div>
+    );
+  }
+  return (
+    <div>
+      <h2 className="page">{title}</h2>
+      <div className="crumb">{crumb}</div>
+      {analyzing && analyzing.running ? (
+        <div style={{ maxWidth: 520 }}>
+          <p className="note">Formatting &amp; comparing {noun}… {analyzing.done}/{analyzing.total}</p>
+          <div className="progress"><div style={{ width: (analyzing.total ? analyzing.done / analyzing.total * 100 : 0) + "%" }} /></div>
+        </div>
+      ) : bulk ? (
+        <Dashboard bulk={bulk} tokens={LABELS} openDrill={openDrill} showKind={showKind} noun={noun} />
+      ) : (
+        <p className="note">Preparing…</p>
       )}
     </div>
   );
@@ -288,12 +320,13 @@ function Wip({ title, icon }) {
 }
 
 /* ============================ per-controller report ============================ */
-function Report({ model, tab, setTab, member, setMember, view, setView }) {
+function Report({ model, tab, setTab, member, setMember, view, setView, widgets = true }) {
   const [O, C, N] = model.labels;
   const bc = {};
   Object.values(model.members).forEach((x) => { if (x.bucket) bc[x.bucket] = (bc[x.bucket] || 0) + 1; });
   const tabs = [["overview", "Overview"], ["genuine", `Genuine Changes (${C}→${O})`]];
-  if (model.hasNew) tabs.push(["threeway", "3-Way + Buckets"], ["checklist", "Retrofit Checklist"], ["widgets", "Widget Remap"]);
+  if (model.hasNew) tabs.push(["threeway", "3-Way + Buckets"], ["checklist", "Retrofit Checklist"]);
+  if (model.hasNew && widgets) tabs.push(["widgets", "Widget Remap"]);
   const gotoMember = (name) => { setMember(name); setTab("genuine"); };
   return (
     <div>
@@ -321,7 +354,7 @@ function Overview({ model, O, C, N }) {
     <div>
       <p className="note"><b>{O}</b> = old base · <b>{C}</b> = customisation on {O} · <b>{N || "—"}</b> = new base. Each {C} change must be re-expressed on {N || "the new base"}.</p>
       <table>
-        <thead><tr><th>Module signature</th>{model.labels.map((l) => <th key={l}>{l}</th>)}</tr></thead>
+        <thead><tr><th>Module / class</th>{model.labels.map((l) => <th key={l}>{l}</th>)}</tr></thead>
         <tbody><tr><td>define()</td>{model.labels.map((l) => <td key={l} className="mono">{model.moduleNames[l] ? `"${model.moduleNames[l]}"` : "(anonymous)"}</td>)}</tr></tbody>
       </table>
       {model.hasNew && (
@@ -351,6 +384,7 @@ function Genuine({ model, O, C, N, member, setMember, view, setView }) {
         {model.genuine.map((n) => { const m = model.members[n]; return (
           <div key={n} className={"memrow" + (n === cur ? " sel" : "")} onClick={() => setMember(n)}>
             <b>{n}</b> <span className={"pill " + (m.change || "")}>{m.change}</span> {m.bucket && <span className={"pill b" + m.bucket}>B{m.bucket}</span>}
+            {m.dups && Object.keys(m.dups).length > 0 && <span className="pill duppill" title="Defined more than once in the file — the later definition wins at runtime">defined {Object.entries(m.dups).map(([l, c]) => `${c}× in ${l}`).join(", ")}</span>}
             <div className="tag">{m.kind}{model.hasNew ? ` · in ${N}: ${m.inNew || ""}` : ""}</div>
           </div>); })}
       </div>
@@ -409,10 +443,13 @@ function Widgets({ model }) {
 }
 
 /* ============================ controllers dashboard ============================ */
-function Dashboard({ bulk, tokens, openDrill }) {
+function Dashboard({ bulk, tokens, openDrill, showKind, noun = "controllers" }) {
   const [BASE, CUST] = tokens;
   const [q, setQ] = useState("");
   const [onlyChanged, setOnlyChanged] = useState(true);
+  const KINDS = ["Business", "Presentation", "Extension"];
+  const [kinds, setKinds] = useState(new Set(KINDS));
+  const toggleKind = (k) => setKinds((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
   const [sort, setSort] = useState({ key: "changes", dir: "desc" });
 
   const rows = bulk.results.map((r, i) => {
@@ -427,7 +464,8 @@ function Dashboard({ bulk, tokens, openDrill }) {
     conflicts: okRows.reduce((s, r) => s + r.conflicts, 0),
     customOnly: okRows.reduce((s, r) => s + r.customOnly, 0),
   };
-  let viewRows = rows.filter((r) => (!onlyChanged || r.changes > 0) && (!q || r.base.toLowerCase().includes(q.toLowerCase())));
+  let viewRows = rows.filter((r) => (!onlyChanged || r.changes > 0) && (!showKind || kinds.has(r.kind))
+    && (!q || r.base.toLowerCase().includes(q.toLowerCase()) || (r.path || "").toLowerCase().includes(q.toLowerCase())));
   const dir = sort.dir === "asc" ? 1 : -1;
   viewRows = [...viewRows].sort((a, b) => sort.key === "name" ? dir * a.base.localeCompare(b.base) : dir * ((a[sort.key] || 0) - (b[sort.key] || 0)) || a.base.localeCompare(b.base));
   const top = okRows.filter((r) => r.changes > 0).sort((a, b) => b.changes - a.changes).slice(0, 10);
@@ -436,10 +474,10 @@ function Dashboard({ bulk, tokens, openDrill }) {
   const arrow = (key) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
 
   const exportCsv = () => {
-    const out = [["controller", "path", "member", "change", "bucket", "in_new", "note"]];
-    okRows.forEach((r) => r.model.genuine.forEach((n) => { const x = r.model.members[n]; out.push([r.base, r.path || "", n, x.change, x.bucket, x.inNew || "", (x.note || "").replace(/\s+/g, " ")]); }));
+    const out = [[showKind ? "module" : "controller", "type", "path", "member", "change", "bucket", "in_new", "note"]];
+    okRows.forEach((r) => r.model.genuine.forEach((n) => { const x = r.model.members[n]; out.push([r.base, r.kind || "", r.path || "", n, x.change, x.bucket, x.inNew || "", (x.note || "").replace(/\s+/g, " ")]); }));
     const csv = out.map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "controllers_changes.csv"; a.click();
+    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = `${noun}_changes.csv`; a.click();
   };
   const BucketBar = ({ bc }) => { const tot = [1, 2, 3, 4, 5].reduce((s, k) => s + bc[k], 0) || 1; return (
     <span className="bucketbar" title={`clean:${bc[1]} conflict:${bc[2]} in-new:${bc[3]} custom-only:${bc[4]} new-only:${bc[5]}`}>
@@ -449,7 +487,7 @@ function Dashboard({ bulk, tokens, openDrill }) {
   return (
     <div>
       <div className="cards">
-        <div className="card"><div className="n">{agg.total}</div><div className="l">controllers</div></div>
+        <div className="card"><div className="n">{agg.total}</div><div className="l">{noun}</div></div>
         <div className="card"><div className="n">{agg.changed}</div><div className="l">customised ({CUST}≠{BASE})</div></div>
         <div className="card"><div className="n">{agg.changes}</div><div className="l">total changes</div></div>
         <div className="card"><div className="n" style={{ color: "var(--chg-mark)" }}>{agg.conflicts}</div><div className="l">conflicts (bucket 2)</div></div>
@@ -459,8 +497,8 @@ function Dashboard({ bulk, tokens, openDrill }) {
         <div className="chart">
           <div className="tag" style={{ marginBottom: 2 }}>Top controllers by change volume — click to open</div>
           {top.map((r) => (
-            <div className="row" key={r.base}>
-              <span className="cname" onClick={() => openDrill(r.i)} title={r.base}>{r.base}</span>
+            <div className="row" key={r.path || r.base}>
+              <span className="cname" onClick={() => openDrill(r.i)} title={r.path || r.base}>{r.base}{r.kind ? ` · ${r.kind}` : ""}</span>
               <span className="bar" style={{ width: (r.changes / maxC) * 100 + "%" }} />
               <span style={{ textAlign: "right" }}>{r.changes}</span>
             </div>
@@ -468,8 +506,11 @@ function Dashboard({ bulk, tokens, openDrill }) {
         </div>
       )}
       <div className="searchbar">
-        <input type="text" placeholder="Search controllers…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input type="text" placeholder={`Search ${noun}…`} value={q} onChange={(e) => setQ(e.target.value)} />
         <span className={"chip" + (onlyChanged ? " on" : "")} onClick={() => setOnlyChanged((v) => !v)}>{onlyChanged ? "✓ " : ""}only changed</span>
+        {showKind && KINDS.map((k) => (
+          <span key={k} className={"chip" + (kinds.has(k) ? " on" : "")} onClick={() => toggleKind(k)}>{kinds.has(k) ? "✓ " : ""}{k}</span>
+        ))}
         <span className="tag">{viewRows.length} shown</span>
         <span className="spacer" />
         <button className="btn" onClick={exportCsv}>Export changes (CSV)</button>
@@ -479,6 +520,7 @@ function Dashboard({ bulk, tokens, openDrill }) {
           <thead>
             <tr>
               <th className="sortable" onClick={() => setSortKey("name")}>Controller{arrow("name")}</th>
+              {showKind && <th>Type</th>}
               {tokens.map((t) => <th key={t} style={{ textAlign: "center" }}>{t}</th>)}
               <th className="sortable" style={{ textAlign: "center" }} onClick={() => setSortKey("changes")}>Changes{arrow("changes")}</th>
               <th className="sortable" style={{ textAlign: "center" }} onClick={() => setSortKey("conflicts")}>Conflicts{arrow("conflicts")}</th>
@@ -489,6 +531,7 @@ function Dashboard({ bulk, tokens, openDrill }) {
             {viewRows.map((r) => { const clickable = !!r.model; return (
               <tr key={r.path || r.base} className={clickable ? "clickable" : ""} style={{ cursor: clickable ? "pointer" : "default" }} onClick={() => clickable && openDrill(r.i)}>
                 <td><b style={{ color: clickable ? "var(--accent)" : "inherit" }}>{r.base}</b>{r.path && <div className="tag" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.path}</div>}</td>
+                {showKind && <td><span className={"kindpill k-" + r.kind}>{r.kind}</span></td>}
                 {tokens.map((t) => <td key={t} style={{ textAlign: "center" }}>{(r.present || []).includes(t) ? "✓" : "–"}</td>)}
                 <td style={{ textAlign: "center", fontWeight: 700 }}>{r.model ? r.changes : "—"}</td>
                 <td style={{ textAlign: "center", color: r.conflicts ? "var(--chg-mark)" : "inherit" }}>{r.model ? r.conflicts : "—"}</td>
