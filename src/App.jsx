@@ -4,6 +4,7 @@ import { extract, extractModule, buildModel, isMainController, controllerKey, is
 import { TwoCol, ThreeCol } from "./components/DiffView";
 import { Checklist } from "./components/Checklist";
 import { FormsView } from "./components/Forms";
+import { OverallView } from "./components/Overall";
 
 const LABELS = ["R21", "KBZ", "R26"];
 const PROJ_META = [
@@ -17,15 +18,15 @@ const MENU = [
   { id: "home", ico: "◧", label: "Project Overview", desc: "Counts across R21 · KBZ · R26" },
   {
     id: "forms", ico: "▤", label: "FormForge", desc: "Forms retrofit",
-    items: [{ id: "forms", label: "Form comparison", ready: true }],
+    items: [{ id: "forms", label: "Form comparison", ready: true }, { id: "forms-all", label: "Overall comparison", ready: true }],
   },
   {
     id: "controllers", ico: "⚙", label: "CtrlSync", desc: "Form-level controllers",
-    items: [{ id: "controllers", label: "Controller comparison", ready: true }],
+    items: [{ id: "controllers", label: "Controller comparison", ready: true }, { id: "controllers-all", label: "Overall comparison", ready: true }],
   },
   {
     id: "mvc", ico: "❏", label: "MVC Bridge", desc: "Business & Presentation controllers",
-    items: [{ id: "mvc", label: "Business & Presentation comparison", ready: true }],
+    items: [{ id: "mvc", label: "Business & Presentation comparison", ready: true }, { id: "mvc-all", label: "Overall comparison", ready: true }],
   },
 ];
 
@@ -96,6 +97,7 @@ export default function App() {
   const [mvcBulk, setMvcBulk] = useState(null);
   const [mvcAnalyzing, setMvcAnalyzing] = useState(null);
   const [mvcDrill, setMvcDrill] = useState(null);
+  const [overall, setOverall] = useState({}); // full-file comparison scans, per category + version pair
   const [tab, setTab] = useState("overview");
   const [member, setMember] = useState(null);
   const [view, setView] = useState("OLD_CUST");
@@ -128,7 +130,7 @@ export default function App() {
   const openMvcDrill = (i) => { setMvcDrill(i); setTab("overview"); setView("OLD_CUST"); setMember(mvcBulk.results[i].model.genuine[0] || null); };
   const reportProps = { tab, setTab, member, setMember, view, setView };
 
-  const goHome = () => { setEntered(false); setPicked([null, null, null]); setBulk(null); setDrill(null); setAnalyzing(null); setFormScan({}); setMvcBulk(null); setMvcDrill(null); setMvcAnalyzing(null); setNav("home"); };
+  const goHome = () => { setEntered(false); setPicked([null, null, null]); setBulk(null); setDrill(null); setAnalyzing(null); setFormScan({}); setMvcBulk(null); setMvcDrill(null); setMvcAnalyzing(null); setOverall({}); setNav("home"); };
 
   return (
     <div>
@@ -153,6 +155,9 @@ export default function App() {
           <div className="content">
             {nav === "home" && <Home picked={picked} goto={setNav} />}
             {nav === "forms" && <FormsView picked={picked} labels={LABELS} scan={formScan} setScan={setFormScan} />}
+            {nav === "forms-all" && <OverallView key="forms" cat="forms" picked={picked} cache={overall} setCache={setOverall} />}
+            {nav === "controllers-all" && <OverallView key="controllers" cat="controllers" picked={picked} cache={overall} setCache={setOverall} />}
+            {nav === "mvc-all" && <OverallView key="mvc" cat="mvc" picked={picked} cache={overall} setCache={setOverall} />}
             {nav === "controllers" && (
               <AnalysisView title="Controller Retrofit" crumb="Form-level controllers · KBZ customisations carried onto R26" noun="controllers"
                 bulk={bulk} analyzing={analyzing} drill={drill} setDrill={setDrill} openDrill={openDrill} reportProps={reportProps} />

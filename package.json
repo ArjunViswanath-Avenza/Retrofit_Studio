@@ -12,6 +12,7 @@
   "dependencies": {
     "acorn": "^8.18.0",
     "acorn-walk": "^8.3.5",
+    "diff-match-patch": "^1.0.5",
     "js-beautify": "^2.0.3",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
