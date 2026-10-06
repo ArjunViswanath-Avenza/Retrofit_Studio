@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { fileStatus, formattedText, diffTexts } from "../lib/filediff";
 import { mvcKind } from "../lib/analyzer";
+import { roleOf } from "../lib/components";
 
-const LABELS = ["R21", "KBZ", "R26"];
+const DEFAULT_LABELS = ["R21", "KBZ", "R26"];
 const PAIRS = [[0, 1], [0, 2], [1, 2]];
 const CONTEXT = 3; // lines kept around each change in "Changes only" mode
 const CHUNK = 120; // rows per lazily-painted block
@@ -17,21 +18,40 @@ const CAT = {
     crumb: "Every Business / Presentation controller file under mvcextensions — formatted and compared line by line",
   },
   forms: {
-    title: "Forms · Overall comparison", noun: "forms", kind: "json",
+    title: "Forms · Overall comparison", noun: "forms", kind: "json", grouped: true, unit: "widget files",
     crumb: "Every widget JSON file of every form (.sm folder) — formatted and compared line by line",
   },
+  comps: {
+    title: "Components · Overall comparison", noun: "components", grouped: true, unit: "files",
+    crumb: "Every file of every user widget — controller, actions, uwProperties, uwDependencies, helper scripts and each widget JSON — formatted and compared line by line",
+  },
 };
+
+// grouped categories: one entry = a folder of files. How each file is typed, titled and ordered.
+const kindOf = (cat, id) => (cat === "forms" || /\.json$/i.test(id) ? "json" : /\.js$/i.test(id) ? "js" : "text");
+const fileName = (cat, id) => (cat === "forms" ? id + ".json" : id);
+const ROLE_RANK = { controller: 0, actions: 1, contract: 2, deps: 3, script: 4, other: 5, structure: 6 };
+function sortIds(cat, key, ids) {
+  if (cat === "forms") {
+    const formId = key.split("/").pop().replace(/\.sm$/i, "");
+    return ids.sort((x, y) => (x === formId ? -1 : y === formId ? 1 : x.localeCompare(y)));
+  }
+  const rank = (id) => ROLE_RANK[roleOf(key, id)] * 2 + (id === "userwidgetmodel.sm/userwidgetmodel.json" ? 0 : 1);
+  return ids.sort((x, y) => rank(x) - rank(y) || x.localeCompare(y));
+}
 
 const ST_ORDER = ["changed", "onlyA", "onlyB", "fmt", "same"];
 const stLabel = (st, la, lb) => ({ changed: "Changed", onlyA: `Only in ${la}`, onlyB: `Only in ${lb}`, fmt: "Formatting only", same: "Identical" })[st];
 
 const titleOf = (cat, key) => {
+  if (cat === "comps") return key.split(".").pop();
   const parts = key.split("/");
   if (cat === "forms") return parts.pop().replace(/\.sm$/i, "");
   if (cat === "mvc") return parts[0];
   return parts.pop().replace(/\.js$/i, "");
 };
 const subOf = (cat, key) => {
+  if (cat === "comps") return key.split(".").slice(0, -1).join(".");
   if (cat === "forms") return key.split("/").slice(0, -1).join("/");
   if (cat === "mvc") return key.split("/").slice(1).join("/");
   return key.split("/").slice(0, -1).join("/");
@@ -47,9 +67,9 @@ async function scanPair(cat, picked, ai, bi, onProgress, alive) {
   for (let i = 0; i < keys.length; i++) {
     if (!alive()) return null;
     const k = keys[i], fa = mA.get(k), fb = mB.get(k);
-    if (cat === "forms") {
+    if (CAT[cat].grouped) {
       const ids = [...new Set([...(fa ? fa.keys() : []), ...(fb ? fb.keys() : [])])];
-      const sts = await Promise.all(ids.map((id) => fileStatus(fa && fa.get(id), fb && fb.get(id), "json")));
+      const sts = await Promise.all(ids.map((id) => fileStatus(fa && fa.get(id), fb && fb.get(id), kindOf(cat, id))));
       const counts = { changed: 0, onlyA: 0, onlyB: 0, fmt: 0, same: 0 }, widgets = {};
       ids.forEach((id, n) => { counts[sts[n]]++; widgets[id] = sts[n]; });
       status[k] = !fa ? "onlyB" : !fb ? "onlyA" : counts.changed || counts.onlyA || counts.onlyB ? "changed" : counts.fmt ? "fmt" : "same";
@@ -63,17 +83,21 @@ async function scanPair(cat, picked, ai, bi, onProgress, alive) {
   return { keys, status, detail };
 }
 
-export function OverallView({ cat, picked, cache, setCache }) {
+// focus: show only that one entry (embedded in a detail page — no title, no list)
+export function OverallView({ cat, picked, cache, setCache, focus, labels = DEFAULT_LABELS }) {
+  const LABELS = labels;
   const meta = CAT[cat];
   const [pairIdx, setPairIdx] = useState(0);
   const [progress, setProgress] = useState(null);
   const [q, setQ] = useState("");
   const [show, setShow] = useState(new Set(["changed", "onlyA", "onlyB", "fmt"]));
-  const [sel, setSel] = useState(null);
-  const [listOpen, setListOpen] = useState(true);
+  const [selState, setSel] = useState(null);
+  const [listOpenState, setListOpen] = useState(true);
+  const sel = focus || selState;
+  const listOpen = !focus && listOpenState;
   const [ai, bi] = PAIRS[pairIdx];
   const la = LABELS[ai], lb = LABELS[bi];
-  const ck = cat + ":" + pairIdx;
+  const ck = cat + ":" + pairIdx + ":" + labels.join("|");
   const scan = cache[ck];
 
   useEffect(() => {
@@ -109,16 +133,20 @@ export function OverallView({ cat, picked, cache, setCache }) {
 
   return (
     <div>
-      <h2 className="page">{meta.title}</h2>
-      <div className="crumb">{meta.crumb}</div>
+      {!focus && (
+        <>
+          <h2 className="page">{meta.title}</h2>
+          <div className="crumb">{meta.crumb}</div>
+        </>
+      )}
       <div className="toolbar">
         <div className="seg">
           {PAIRS.map(([x, y], i) => (
             <button key={i} className={i === pairIdx ? "on" : ""} disabled={!pairOk(i)} onClick={() => setPairIdx(i)}>{LABELS[x]} vs {LABELS[y]}</button>
           ))}
         </div>
-        <button className="btn ghost" onClick={() => setListOpen((v) => !v)}>{listOpen ? `⟨ Hide ${meta.noun} list` : `☰ Show ${meta.noun} list`}</button>
-        {scan && (
+        {!focus && <button className="btn ghost" onClick={() => setListOpen((v) => !v)}>{listOpen ? `⟨ Hide ${meta.noun} list` : `☰ Show ${meta.noun} list`}</button>}
+        {scan && !focus && (
           <span className="note">
             {scan.keys.length} {meta.noun} · <b>{counts.changed}</b> changed · <b>{counts.onlyA}</b> only in {la} · <b>{counts.onlyB}</b> only in {lb}
             {counts.fmt > 0 && <> · <b>{counts.fmt}</b> formatting only</>} · <b>{counts.same}</b> identical
@@ -156,7 +184,7 @@ export function OverallView({ cat, picked, cache, setCache }) {
                       <div className="ovsub">
                         {stLabel(st, la, lb)}
                         {dt && st === "changed" && (
-                          <> · widgets {dt.counts.changed > 0 && <b className="c">~{dt.counts.changed}</b>} {dt.counts.onlyB > 0 && <b className="a">+{dt.counts.onlyB}</b>} {dt.counts.onlyA > 0 && <b className="r">−{dt.counts.onlyA}</b>}</>
+                          <> · {cat === "comps" ? "files" : "widgets"} {dt.counts.changed > 0 && <b className="c">~{dt.counts.changed}</b>} {dt.counts.onlyB > 0 && <b className="a">+{dt.counts.onlyB}</b>} {dt.counts.onlyA > 0 && <b className="r">−{dt.counts.onlyA}</b>}</>
                         )}
                       </div>
                       <div className="ovpath">{subOf(cat, k)}</div>
@@ -169,13 +197,13 @@ export function OverallView({ cat, picked, cache, setCache }) {
           )}
           <div className="ovmain">
             {sel && scan.status[sel] ? (
-              cat === "forms" ? (
-                <FormCompare key={ck + sel} formKey={sel} ma={fileOf(ai, sel)} mb={fileOf(bi, sel)} detail={scan.detail[sel]} la={la} lb={lb} />
+              meta.grouped ? (
+                <GroupCompare key={ck + sel} cat={cat} groupKey={sel} ma={fileOf(ai, sel)} mb={fileOf(bi, sel)} detail={scan.detail[sel]} la={la} lb={lb} />
               ) : (
                 <FileCompare key={ck + sel} fileKey={sel} fa={fileOf(ai, sel)} fb={fileOf(bi, sel)} la={la} lb={lb} status={scan.status[sel]} />
               )
             ) : (
-              <p className="note">Select a file on the left.</p>
+              <p className="note">{focus ? `Not present in ${la} or ${lb}.` : "Select a file on the left."}</p>
             )}
           </div>
         </div>
@@ -185,6 +213,13 @@ export function OverallView({ cat, picked, cache, setCache }) {
 }
 
 const relOf = (f) => (f ? (f.webkitRelativePath || f.name).replace(/\\/g, "/") : null);
+// folder path of a grouped entry, from any of its files (strip that file's id from its path)
+function folderOf(cat, map) {
+  const first = map && map.entries().next().value;
+  if (!first) return null;
+  const rel = relOf(first[1]), tail = fileName(cat, first[0]);
+  return rel.endsWith("/" + tail) ? rel.slice(0, rel.length - tail.length - 1) : rel;
+}
 
 function FileCompare({ fileKey, fa, fb, la, lb, status }) {
   const [res, setRes] = useState(null);
@@ -215,11 +250,12 @@ function FileCompare({ fileKey, fa, fb, la, lb, status }) {
   );
 }
 
-function FormCompare({ formKey, ma, mb, detail, la, lb }) {
+// a folder of files (form .sm or component): one section per file that differs
+function GroupCompare({ cat, groupKey, ma, mb, detail, la, lb }) {
+  const unit = CAT[cat].unit;
   const [showSame, setShowSame] = useState(false);
   const [res, setRes] = useState(null);
-  const formId = formKey.split("/").pop().replace(/\.sm$/i, "");
-  const ids = useMemo(() => Object.keys(detail.widgets).sort((x, y) => (x === formId ? -1 : y === formId ? 1 : x.localeCompare(y))), [detail, formId]);
+  const ids = useMemo(() => sortIds(cat, groupKey, Object.keys(detail.widgets)), [cat, groupKey, detail]);
   const wanted = useMemo(() => ids.filter((id) => showSame || detail.widgets[id] !== "same"), [ids, showSame, detail]);
   const nSame = detail.counts.same;
 
@@ -231,8 +267,9 @@ function FormCompare({ formKey, ma, mb, detail, la, lb }) {
         const sections = [];
         for (let i = 0; i < wanted.length; i++) {
           const id = wanted[i], fa = ma && ma.get(id), fb = mb && mb.get(id);
-          const [a, b] = await Promise.all([fa ? formattedText(fa) : null, fb ? formattedText(fb) : null]);
-          sections.push({ id, title: id + ".json", status: detail.widgets[id], d: diffTexts(a, b) });
+          const kind = kindOf(cat, id);
+          const [a, b] = await Promise.all([fa ? formattedText(fa, kind) : null, fb ? formattedText(fb, kind) : null]);
+          sections.push({ id, title: fileName(cat, id), status: detail.widgets[id], d: diffTexts(a, b) });
           if (!alive) return;
         }
         if (alive) setRes({ sections });
@@ -247,19 +284,19 @@ function FormCompare({ formKey, ma, mb, detail, la, lb }) {
   return (
     <div>
       <div className="ovhead">
-        <div className="ovtitle">{formKey}</div>
+        <div className="ovtitle">{groupKey}</div>
         <span className="note">
-          {ids.length} widget files · <b className="c">~{c.changed}</b> changed · <b className="a">+{c.onlyB}</b> only in {lb} · <b className="r">−{c.onlyA}</b> only in {la}
+          {ids.length} {unit} · <b className="c">~{c.changed}</b> changed · <b className="a">+{c.onlyB}</b> only in {lb} · <b className="r">−{c.onlyA}</b> only in {la}
           {c.fmt > 0 && <> · {c.fmt} formatting only</>} · {nSame} identical
         </span>
         <span className={"chip" + (showSame ? " on" : "")} onClick={() => setShowSame((v) => !v)}>
-          {showSame ? "✓ " : ""}show identical widget files ({nSame})
+          {showSame ? "✓ " : ""}show identical {unit} ({nSame})
         </span>
       </div>
-      {!res ? <p className="note">Formatting and comparing {wanted.length} widget files…</p>
+      {!res ? <p className="note">Formatting and comparing {wanted.length} {unit}…</p>
         : res.error ? <p className="note">Could not compare: {res.error}</p>
-          : !res.sections.length ? <p className="note">All widget files are identical in {la} and {lb}.</p>
-            : <DiffPane sections={res.sections} la={la} lb={lb} pathA={relOf(ma && ma.values().next().value)?.replace(/\/[^/]+$/, "")} pathB={relOf(mb && mb.values().next().value)?.replace(/\/[^/]+$/, "")} />}
+          : !res.sections.length ? <p className="note">All {unit} are identical in {la} and {lb}.</p>
+            : <DiffPane sections={res.sections} la={la} lb={lb} pathA={folderOf(cat, ma)} pathB={folderOf(cat, mb)} />}
     </div>
   );
 }
@@ -337,7 +374,7 @@ function renderItem(it, i, setOpen, la, lb) {
   );
 }
 
-function DiffPane({ sections, la, lb, pathA, pathB }) {
+export function DiffPane({ sections, la, lb, pathA, pathB }) {
   const [mode, setMode] = useState("full");
   const [open, setOpen] = useState(() => new Set());
   const [cur, setCur] = useState(-1);

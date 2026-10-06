@@ -48,9 +48,11 @@ const RECENT_MAX = 24;
 
 async function rawText(file) { return normalize(await file.text()); }
 
-export async function formattedText(file) {
+// kind: js | json -> formatted with the shared rules; text -> shown exactly as stored
+export async function formattedText(file, kind = "js") {
   if (recent.has(file)) { const t = recent.get(file); recent.delete(file); recent.set(file, t); return t; }
-  const t = fmt(await rawText(file));
+  const raw = await rawText(file);
+  const t = kind === "text" ? raw : fmt(raw);
   recent.set(file, t);
   if (recent.size > RECENT_MAX) recent.delete(recent.keys().next().value);
   return t;
@@ -63,7 +65,7 @@ async function hashes(file, kind, deep) {
   if (h.raw && (!deep || h.deep)) return h;
   const raw = await rawText(file);
   h.raw = hash(raw);
-  if (deep) h.deep = hash(kind === "json" ? squashJson(raw) : await formattedText(file));
+  if (deep) h.deep = kind === "text" ? h.raw : hash(kind === "json" ? squashJson(raw) : await formattedText(file, kind));
   return h;
 }
 

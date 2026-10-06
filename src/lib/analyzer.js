@@ -366,6 +366,86 @@ export function extractModule(src) {
   return { moduleName, members };
 }
 
+// ---- User-widget (component) controllers ----
+// Mostly AMD factories that RETURN the controller object: define([deps], function(deps){ return { m: fn, ... }; }).
+// Also seen: `var controller = {...}; return controller;`, prototype classes (`X.prototype.m = ...`), and define({...}).
+// Members: returned-object properties (by key), prototype methods (by method name), factory-level helpers
+// (`ƒ name` / `var name`), plus one pseudo-member for the define() dependency list so added requires show up.
+export function extractComponent(src) {
+  src = (src || "").replace(/\r\n?/g, "\n").replace(/^﻿/, "");
+  let ast;
+  try {
+    ast = parse(src, { ecmaVersion: "latest", allowReturnOutsideFunction: true, allowAwaitOutsideFunction: true });
+  } catch (e) {
+    throw new Error("Parse error: " + e.message);
+  }
+  let moduleName = null;
+  const members = {};
+  const put = (name, kind, raw) => {
+    const f = fmt(raw);
+    const prev = members[name];
+    members[name] = { kind, raw, fmt: f, canon: canonOf(f), dups: prev ? (prev.dups || 1) + 1 : 1 };
+  };
+  const keyOf = (p) => (p.key.name !== undefined ? p.key.name : p.key.value);
+  const putObject = (obj) => {
+    for (const p of obj.properties) {
+      if (p.type !== "Property") continue;
+      const key = keyOf(p);
+      if (key == null) continue;
+      put(String(key), FUNC.has(p.value.type) ? "method" : "field", src.slice(p.value.start, p.value.end));
+    }
+  };
+
+  for (const node of ast.body) {
+    // file-level declarations outside define() (online / mobile banking controllers keep state there)
+    if (node.type === "FunctionDeclaration" && node.id) { put(`ƒ ${node.id.name}`, "method", src.slice(node.start, node.end)); continue; }
+    if (node.type === "VariableDeclaration") {
+      for (const d of node.declarations) if (d.id.type === "Identifier") put(`var ${d.id.name}`, "field", src.slice(d.start, d.end));
+      continue;
+    }
+    if (node.type !== "ExpressionStatement" || node.expression.type !== "CallExpression") continue;
+    const call = node.expression;
+    if (!call.callee || call.callee.name !== "define") continue;
+    const deps = call.arguments.find((a) => a.type === "ArrayExpression");
+    const factory = call.arguments.find((a) => FUNC.has(a.type));
+    for (const a of call.arguments) {
+      if (a.type === "Literal" && typeof a.value === "string") moduleName = a.value;
+      if (a.type === "ObjectExpression") putObject(a);
+    }
+    if (deps || (factory && factory.params.length)) {
+      const params = factory ? factory.params.map((p) => src.slice(p.start, p.end)).join(", ") : "";
+      put("define() dependencies", "imports", `define(${deps ? src.slice(deps.start, deps.end) : "[]"}, function(${params}) {});`);
+    }
+    if (!factory || factory.body.type !== "BlockStatement") continue;
+    const body = factory.body.body;
+    // what the factory returns: an object literal, or the name of a variable holding one
+    const ret = body.find((s) => s.type === "ReturnStatement" && s.argument);
+    const retName = ret && ret.argument.type === "Identifier" ? ret.argument.name : null;
+    for (const st of body) {
+      if (st.type === "ReturnStatement" && st.argument && st.argument.type === "ObjectExpression") putObject(st.argument);
+      else if (st.type === "FunctionDeclaration" && st.id) put(`ƒ ${st.id.name}`, "method", src.slice(st.start, st.end));
+      else if (st.type === "VariableDeclaration") {
+        for (const d of st.declarations) {
+          if (d.id.type !== "Identifier") continue;
+          if (d.id.name === retName && d.init && d.init.type === "ObjectExpression") putObject(d.init);
+          else put(`var ${d.id.name}`, "field", src.slice(d.start, d.end));
+        }
+      } else if (st.type === "ExpressionStatement" && st.expression.type === "AssignmentExpression" && st.expression.left.type === "MemberExpression") {
+        const L = st.expression.left, R = st.expression.right;
+        const proto = L.object.type === "MemberExpression" && !L.object.computed && L.object.property.name === "prototype";
+        const onRet = retName && L.object.type === "Identifier" && L.object.name === retName;
+        if (proto || onRet) {
+          const name = L.property.name ?? L.property.value;
+          if (name == null) continue;
+          if (proto && !moduleName && L.object.object.type === "Identifier") moduleName = L.object.object.name;
+          put(String(name), FUNC.has(R.type) ? "method" : "field", src.slice(R.start, R.end));
+        }
+      }
+    }
+  }
+  return { moduleName, members };
+}
+
 // A Business/Presentation controller file (not other scripts that may sit in mvcextensions).
 export function isMvcController(relPath) {
   return /\/(Business|Presentation)Controllers\/[^/]+\.js$/i.test("/" + relPath.replace(/\\/g, "/"));

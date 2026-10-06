@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { idSetDiff, buildFormDiff, computeCounts, summarizeForm, CATEGORIES, CATEGORY_LABELS } from "../lib/forms";
 
-const PAIRS = [["R21", "KBZ"], ["R21", "R26"], ["KBZ", "R26"]];
+const PAIRS = [[0, 1], [0, 2], [1, 2]]; // positions in labels: base·custom, base·new, custom·new
 const MARK = { added: "+", removed: "−", moved: "↔", modified: "~", same: "" };
 
 const formName = (key) => key.split("/").pop().replace(/\.sm$/i, "");
@@ -28,11 +28,11 @@ async function readWidgets(map) {
   return { W, bad };
 }
 
-function PairSelector({ pairIdx, setPairIdx }) {
+function PairSelector({ pairIdx, setPairIdx, labels }) {
   return (
     <div className="seg">
-      {PAIRS.map(([a, b], i) => (
-        <button key={i} className={i === pairIdx ? "on" : ""} onClick={() => setPairIdx(i)}>{a} vs {b}</button>
+      {PAIRS.filter(([, b]) => b < labels.length).map(([a, b], i) => (
+        <button key={i} className={i === pairIdx ? "on" : ""} onClick={() => setPairIdx(i)}>{labels[a]} vs {labels[b]}</button>
       ))}
     </div>
   );
@@ -43,7 +43,7 @@ export function FormsView({ picked, labels, scan, setScan }) {
   const [pairIdx, setPairIdx] = useState(0);
   const [open, setOpen] = useState(null);
   const started = useRef(new Set());
-  const [A, B] = PAIRS[pairIdx];
+  const [A, B] = PAIRS[pairIdx].map((i) => labels[i]);
   const pairKey = A + "|" + B;
 
   // property differences need every widget read, so scan each pair once in the background
@@ -74,8 +74,8 @@ function FormsList({ picked, labels, pairIdx, setPairIdx, openForm, scanEntry })
   const [q, setQ] = useState("");
   const [onlyChanged, setOnlyChanged] = useState(true);
   const [sort, setSort] = useState({ key: "total", dir: "desc" });
-  const [A, B] = PAIRS[pairIdx];
-  const ia = labels.indexOf(A), ib = labels.indexOf(B);
+  const [ia, ib] = PAIRS[pairIdx];
+  const A = labels[ia], B = labels[ib];
   const scanning = scanEntry && scanEntry.done < scanEntry.total;
 
   const rows = useMemo(() => {
@@ -119,7 +119,7 @@ function FormsList({ picked, labels, pairIdx, setPairIdx, openForm, scanEntry })
     <div>
       <h2 className="page">Form Comparison</h2>
       <div className="crumb">Widget structure + property differences per form · {A} (base) → {B} (target)</div>
-      <PairSelector pairIdx={pairIdx} setPairIdx={setPairIdx} />
+      <PairSelector pairIdx={pairIdx} setPairIdx={setPairIdx} labels={labels} />
       <div className="cards">
         <div className="card"><div className="n">{agg.forms}</div><div className="l">forms in {A}/{B}</div></div>
         <div className="card"><div className="n">{agg.changed}</div><div className="l">forms with differences</div></div>
@@ -194,9 +194,10 @@ function FormsList({ picked, labels, pairIdx, setPairIdx, openForm, scanEntry })
 }
 
 /* ================================================================= tree ================================================================= */
-function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back }) {
-  const [A, B] = PAIRS[pairIdx];
-  const ia = labels.indexOf(A), ib = labels.indexOf(B);
+// getMap(i) -> Map(widgetId -> File) for version i (defaults to the form's .sm); embedded hides the page header
+export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, getMap, embedded }) {
+  const [ia, ib] = PAIRS[pairIdx];
+  const A = labels[ia], B = labels[ib];
   const [data, setData] = useState(null);
   const [bad, setBad] = useState(0);
   const [expanded, setExpanded] = useState(new Set());
@@ -212,7 +213,8 @@ function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back }) {
     let cancelled = false;
     setData(null); setSel(null); setKeyFilter(null);
     (async () => {
-      const [ra, rb] = await Promise.all([readWidgets(picked[ia]?.forms.get(formKey)), readWidgets(picked[ib]?.forms.get(formKey))]);
+      const mapOf = (i) => (getMap ? getMap(i) : picked[i]?.forms.get(formKey));
+      const [ra, rb] = await Promise.all([readWidgets(mapOf(ia)), readWidgets(mapOf(ib))]);
       if (cancelled) return;
       const d = buildFormDiff(ra.W, rb.W);
       setBad(ra.bad + rb.bad);
@@ -305,10 +307,14 @@ function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back }) {
 
   return (
     <div>
-      <button className="btn ghost" onClick={back} style={{ marginBottom: 10 }}>← All forms</button>
-      <h2 className="page">{formName(formKey)}</h2>
-      <div className="crumb">{formKey}</div>
-      <PairSelector pairIdx={pairIdx} setPairIdx={setPairIdx} />
+      {!embedded && (
+        <>
+          <button className="btn ghost" onClick={back} style={{ marginBottom: 10 }}>← All forms</button>
+          <h2 className="page">{formName(formKey)}</h2>
+          <div className="crumb">{formKey}</div>
+        </>
+      )}
+      <PairSelector pairIdx={pairIdx} setPairIdx={setPairIdx} labels={labels} />
 
       {!data || !counts ? (
         <p className="note">Reading widgets for {A} and {B}…</p>

@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Trial input projects (multi-GB, picked in the browser — never commit)
+/Apps_Trial
