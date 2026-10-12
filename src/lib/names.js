@@ -5,7 +5,7 @@ export const ROLES = {
   custom: { label: "Customised version", hint: "the base plus your own changes" },
   target: { label: "New release", hint: "the version you are moving to" },
 };
-export const SLOTS = { ui: ["base", "custom", "target"], ma: ["base", "custom", "target"], fabric: ["custom", "target"] };
+export const SLOTS = { ui: ["base", "custom", "target"], ma: ["base", "custom", "target"], fabric: ["base", "custom", "target"] };
 
 export const DEFAULT_NAMES = {
   ui: [
@@ -19,6 +19,7 @@ export const DEFAULT_NAMES = {
     { name: "R26", sub: "Micro apps" },
   ],
   fabric: [
+    { name: "R21", sub: "Base Fabric app" },
     { name: "KBZ", sub: "Customised Fabric app" },
     { name: "R26", sub: "New release Fabric app" },
   ],

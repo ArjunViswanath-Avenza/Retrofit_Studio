@@ -14,7 +14,7 @@
 //                               /<object>/Operations/<verb>Mapping.json                  verb -> backend mapping
 //   Apps/_Orchestration/<svc>/<ver>/<op>.xml            composite / looping operation (steps = config-param "service")
 //   Apps/_WorkflowServices/<svc>/<ver>/Meta.json, Endpoints/*.json, ModelLayout/*.json
-//   Apps/_JARs/                                         ignored (jars + their meta) for now
+//   Apps/_JARs/                                         jars + their meta — not part of LoomSync; compared in the Java JARs view (jars.js)
 //   lockConfig.json                                     ignored (written by newer Fabric exports only)
 //
 // Every comparable unit is flattened to { property path -> string value }. Embedded JSON / XML stored in
@@ -98,14 +98,14 @@ export function fabricRel(relPath) {
   return rel || null;
 }
 
-// a picked export folder (FileList) -> files under Apps/ (jars skipped) + service counts
+// a picked export folder (FileList) -> files under Apps/ + jar files (for the Java JARs view) + service counts
 export function scanFabricFolder(fileList) {
-  const files = new Map();
+  const files = new Map(), jarFiles = new Map();
   let jars = 0, outside = 0;
   for (const f of fileList) {
     const rel = fabricRel(f.webkitRelativePath || f.name);
     if (!rel) { outside++; continue; }
-    if (/\.jar$/i.test(rel)) { jars++; continue; }
+    if (/\.jar$/i.test(rel)) { jars++; jarFiles.set(rel.split("/").pop(), f); continue; }
     files.set(rel, f);
   }
   const svcs = {};
@@ -116,7 +116,7 @@ export function scanFabricFolder(fileList) {
   }
   const appRel = [...files.keys()].find((r) => /^[^_/][^/]*\/Meta\.json$/.test(r));
   return {
-    files, fileCount: fileList.length, jars, outside, app: appRel ? appRel.split("/")[0] : null,
+    files, jarFiles, fileCount: fileList.length, jars, outside, app: appRel ? appRel.split("/")[0] : null,
     counts: Object.fromEntries(Object.entries(svcs).map(([k, v]) => [k, v.size])),
   };
 }
@@ -442,4 +442,47 @@ export function maskText(text) {
     .replace(/(<key>(?:password|[a-z_]*secret[a-z_]*)<\/key>\s*<value>)([^<]*)(<\/value>)/gi, (m, a, v, b) => (v ? `${a}••••••${b}` : m))
     .replace(/("(?:password|[a-z_]*secret[a-z_]*|client_pvt_key_jwt)"\s*:\s*")([^"]*)(")/gi, (m, a, v, b) => (v ? `${a}••••••${b}` : m))
     .replace(/(\\"(?:password|[a-z_]*secret[a-z_]*|client_pvt_key_jwt)\\"\s*:\s*\\")((?:[^\\]|\\(?!"))*)(\\")/gi, (m, a, v, b) => (v ? `${a}••••••${b}` : m));
+}
+
+// ---------------------------------------------------------------- 3-way retrofit (base · customised · new release)
+// bucket id, title, what it means — shared by LoomSync and Java JARs
+export const RETRO_BUCKETS = [
+  ["1", "Re-apply", "new release left it unchanged"],
+  ["2", "Conflict", "changed in both — merge by hand"],
+  ["3", "Already there", "new release already matches"],
+  ["4", "Port as new", "only in the customised version"],
+  ["?", "Target missing", "changed, but gone from the new release"],
+  ["R", "Removed", "removed in the customised version"],
+];
+// Built from the three pairwise analyses. Only logic differences count; environment / export-format ones are equal.
+const EQUALISH = new Set(["same", "format", "environment"]);
+export function fabricRetrofit(rBC, rBT, rCT) {
+  const idx = (r) => new Map(r.units.map((u) => [u.key, u]));
+  const BC = idx(rBC), BT = idx(rBT), CT = idx(rCT);
+  const rows = [];
+  let targetOnly = 0;
+  for (const k of new Set([...BC.keys(), ...BT.keys(), ...CT.keys()])) {
+    const bc = BC.get(k), bt = BT.get(k), ct = CT.get(k);
+    const u = bc || bt || ct;
+    const inBase = bc ? bc.present[0] : bt ? bt.present[0] : false;
+    const inCustom = bc ? bc.present[1] : ct ? ct.present[0] : false;
+    const inTarget = bt ? bt.present[1] : ct ? ct.present[1] : false;
+    let bucket = null, note = "";
+    if (inBase && inCustom && bc && bc.status === "changed") {
+      if (!inTarget) { bucket = "?"; note = "changed in the customised version, missing in the new release"; }
+      else if (ct && EQUALISH.has(ct.status)) { bucket = "3"; note = "the new release already matches the customised version"; }
+      else if (bt && EQUALISH.has(bt.status)) { bucket = "1"; note = "the new release left it unchanged — re-apply the customisation"; }
+      else { bucket = "2"; note = "changed in both — merge by hand"; }
+    } else if (!inBase && inCustom) {
+      if (!inTarget) { bucket = "4"; note = "only in the customised version — port as new"; }
+      else if (ct && EQUALISH.has(ct.status)) { bucket = "3"; note = "the new release already has the same item"; }
+      else { bucket = "2"; note = "added in both, differently — merge by hand"; }
+    } else if (inBase && !inCustom) {
+      bucket = "R"; note = inTarget ? "removed in the customised version, still in the new release" : "removed in the customised version and in the new release";
+    } else if ((inBase && inTarget && bt && bt.status === "changed") || (!inBase && !inCustom && inTarget)) {
+      targetOnly++; // a change only the new release made — nothing to retrofit
+    }
+    if (bucket) rows.push({ key: k, type: u.type, svc: u.svc, id: u.id, kind: u.kind, bucket, note, logic: [bc ? bc.counts.logic : 0, bt ? bt.counts.logic : 0, ct ? ct.counts.logic : 0] });
+  }
+  return { rows, targetOnly };
 }

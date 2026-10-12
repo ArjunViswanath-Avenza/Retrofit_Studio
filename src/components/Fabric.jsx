@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import { DiffPane } from "./Overall";
 import { diffTexts } from "../lib/filediff";
 import { fmt } from "../lib/analyzer";
-import { TYPES, unitDetail, categoryOf, mask, maskText, parseXml, prettyXml } from "../lib/fabric";
+import { TYPES, RETRO_BUCKETS, unitDetail, categoryOf, mask, maskText, parseXml, prettyXml } from "../lib/fabric";
 
 const ST = ["changed", "onlyA", "onlyB", "environment", "format", "same"];
 const stLabel = (st, [la, lb]) => ({
@@ -29,7 +29,7 @@ export function FabricPickers({ fab, onFabFolder, labels, subs = [] }) {
           {fab[i] && (
             <div className="sub2">
               {fab[i].app || "app"} · {TYPES.filter((t) => fab[i].counts[t]).map((t) => `${fab[i].counts[t]} ${t}`).join(" · ")}
-              {fab[i].jars ? ` · ${fab[i].jars} jars skipped` : ""}
+              {fab[i].jars ? ` · ${fab[i].jars} jars` : ""}
             </div>
           )}
         </div>
@@ -39,20 +39,34 @@ export function FabricPickers({ fab, onFabFolder, labels, subs = [] }) {
 }
 
 // ---------------------------------------------------------------- page
-export function LoomSync({ type, fab, onFabFolder, labels, bulk, analyzing, sel, setSel, goType }) {
+// names: all three version names (base, customised, new release); pair: the two slot positions being compared.
+export function LoomSync({ type, fab, onFabFolder, names, pairs, pair, setPair, bulk, analyzing, retro, retroProgress, sel, setSel, goType }) {
   const title = type ? `LoomSync · ${type} services` : "LoomSync · Fabric overview";
+  const labels = pair ? [names[pair[0]], names[pair[1]]] : names.slice(1);
   const header = (
     <>
       <h2 className="page">{title}</h2>
-      <div className="crumb">Exported Fabric apps compared service by service — {labels[0]} vs {labels[1]} (JARs ignored)</div>
+      <div className="crumb">Exported Fabric apps compared service by service — {labels[0]} vs {labels[1]} (jars: see Java JARs)</div>
+      {pairs.length > 1 && (
+        <div className="toolbar">
+          <b>Compare</b>
+          <div className="seg">
+            {pairs.map((p) => (
+              <button key={p.join("")} className={pair && p[0] === pair[0] && p[1] === pair[1] ? "on" : ""} onClick={() => setPair(p)}>
+                {names[p[0]]} vs {names[p[1]]}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </>
   );
-  if (!fab[0] || !fab[1]) {
+  if (pairs.length === 0) {
     return (
       <div>
         {header}
-        <div className="rules">Pick the two exported Fabric app folders (the folder that contains <code>Apps/</code>). Files are read in your browser only.</div>
-        <FabricPickers fab={fab} onFabFolder={onFabFolder} labels={labels} />
+        <div className="rules">Pick at least two exported Fabric app folders (the folder that contains <code>Apps/</code>). Files are read in your browser only.</div>
+        <FabricPickers fab={fab} onFabFolder={onFabFolder} labels={names} />
       </div>
     );
   }
@@ -61,7 +75,7 @@ export function LoomSync({ type, fab, onFabFolder, labels, bulk, analyzing, sel,
       <div>
         {header}
         <div style={{ maxWidth: 520 }}>
-          <p className="note">Reading &amp; comparing Fabric services… {analyzing ? `${analyzing.done}/${analyzing.total}` : ""}</p>
+          <p className="note">Reading &amp; comparing {labels[0]} and {labels[1]} Fabric services… {analyzing && analyzing.total ? `${analyzing.done}/${analyzing.total}` : ""}</p>
           <div className="progress"><div style={{ width: (analyzing && analyzing.total ? (analyzing.done / analyzing.total) * 100 : 0) + "%" }} /></div>
         </div>
       </div>
@@ -71,7 +85,76 @@ export function LoomSync({ type, fab, onFabFolder, labels, bulk, analyzing, sel,
   return (
     <div>
       {header}
-      {type ? <TypeView bulk={bulk} labels={labels} type={type} setSel={setSel} /> : <Overview bulk={bulk} labels={labels} goType={goType} setSel={setSel} />}
+      {type ? <TypeView bulk={bulk} labels={labels} type={type} setSel={setSel} /> : (
+        <>
+          {retroProgress && <RetrofitView retro={retro} progress={retroProgress} names={names} open={(row) => { setPair([1, 2]); setSel({ type: row.type, svc: row.svc, unit: row.key }); }} />}
+          <Overview bulk={bulk} labels={labels} goType={goType} setSel={setSel} />
+        </>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------- 3-way retrofit (all three exports loaded)
+const BUCKETS = RETRO_BUCKETS;
+function RetrofitView({ retro, progress, names, open }) {
+  const [B, C, T] = names;
+  const [show, setShow] = useState(new Set(["1", "2", "4", "?"]));
+  const [q, setQ] = useState("");
+  if (!retro) {
+    const pairNames = [[B, C], [B, T], [C, T]];
+    return (
+      <div className="retro">
+        <h3>Retrofit view · {B} → {C} → {T}</h3>
+        <p className="note">All three exports are loaded, so each {C} change is checked against {T}. Running the three pairwise comparisons:</p>
+        <div className="retroprog">
+          {progress.map((x, i) => (
+            <span key={i} className={"chip" + (x === "done" ? " on" : "")}>
+              {pairNames[i][0]} vs {pairNames[i][1]}: {x === "done" ? "done" : x === "waiting" ? "waiting" : `${x.done}/${x.total || "…"}`}
+            </span>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  const counts = {};
+  for (const r of retro.rows) counts[r.bucket] = (counts[r.bucket] || 0) + 1;
+  const ql = q.trim().toLowerCase();
+  const rows = retro.rows.filter((r) => show.has(r.bucket) && (!ql || `${r.svc} ${r.id}`.toLowerCase().includes(ql)))
+    .sort((a, b) => "21?43R".indexOf(a.bucket) - "21?43R".indexOf(b.bucket) || a.svc.localeCompare(b.svc) || a.id.localeCompare(b.id));
+  const toggle = (k) => setShow((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  return (
+    <div className="retro">
+      <h3>Retrofit view · {B} → {C} → {T}</h3>
+      <p className="note">Every {C} change to the Fabric app (against {B}), and what to do with it in {T}. Environment settings and export-format differences are not counted. {retro.targetOnly} items were changed or added only by {T} — nothing to retrofit there.</p>
+      <div className="retrocards">
+        {BUCKETS.map(([k, t, d]) => (
+          <div key={k} className={"retrocard rb-" + (k === "?" ? "q" : k) + (show.has(k) ? " on" : "")} onClick={() => toggle(k)}>
+            <b>{counts[k] || 0}</b><span>{t}</span><em>{d}</em>
+          </div>
+        ))}
+      </div>
+      <div className="searchbar">
+        <input type="text" placeholder="Search services or items…" value={q} onChange={(e) => setQ(e.target.value)} />
+        <span className="note">{rows.length} shown · click a row to open it ({C} vs {T})</span>
+      </div>
+      <div className="retrotable">
+        <table>
+          <thead><tr><th>Bucket</th><th>Type</th><th>Service</th><th>Item</th><th>What to do</th><th style={{ textAlign: "center" }}>Logic diffs<br /><span className="tag">{B}→{C} · {B}→{T} · {C}→{T}</span></th></tr></thead>
+          <tbody>
+            {rows.slice(0, 400).map((r) => (
+              <tr key={r.key} className="clickable" style={{ cursor: "pointer" }} onClick={() => open(r)}>
+                <td><span className={"rbadge rb-" + (r.bucket === "?" ? "q" : r.bucket)}>{BUCKETS.find((b) => b[0] === r.bucket)[1]}</span></td>
+                <td>{r.type}</td><td><b>{r.svc}</b></td><td className="mono" style={{ wordBreak: "break-all" }}>{r.id}</td>
+                <td className="tag">{r.note}</td>
+                <td style={{ textAlign: "center" }} className="mono">{r.logic.join(" · ")}</td>
+              </tr>
+            ))}
+            {rows.length > 400 && <tr><td colSpan={6} className="note">Showing 400 of {rows.length} — narrow with the search or the bucket cards.</td></tr>}
+            {!rows.length && <tr><td colSpan={6} className="note">Nothing in the selected buckets.</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -184,7 +267,7 @@ function Overview({ bulk, labels, goType, setSel }) {
           <li><b>Logic</b> — behaviour or contract: connector type, security, endpoint URLs, class / method names, pre/post processors, request &amp; response params, DB entity metadata (columns, relationships), object fields, backend mappings, orchestration steps.</li>
           <li><b>Environment</b> — DB user / password / JDBC URL / pool size, OAuth client id / secret and IdP hosts. Counted separately; secret values are masked.</li>
           <li><b>Export format</b> — produced by the Fabric version that wrote the export, not by a change: <code>isExtended</code>, <code>customOperation</code>, <code>customVerb</code>, <code>enableFrontendUrl</code>, param order numbers, <code>etag</code>s, designer layout (<code>*VisualMappingData</code>), the mirrored <code>mapperData</code> copy, field <code>id</code>/<code>entityTypeId</code>. Hidden unless you switch them on.</li>
-          <li>A setting present on one side only with a default value (empty, false, null) counts as equal. Object operation names are compared without their generated number suffix. <code>lockConfig.json</code> and the <code>_JARs</code> folder are not compared.</li>
+          <li>A setting present on one side only with a default value (empty, false, null) counts as equal. Object operation names are compared without their generated number suffix. <code>lockConfig.json</code> is not compared; jars are compared in <b>Java JARs</b>.</li>
         </ul>
       </div>
     </div>

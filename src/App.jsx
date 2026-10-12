@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import "./App.css";
 import { extractComponent, extractModule, buildModel, mvcKind } from "./lib/analyzer";
 import { TwoCol, ThreeCol } from "./components/DiffView";
@@ -11,8 +11,12 @@ import { scanFolder } from "./lib/scan";
 import { MicroAppUpload, MicroAppMap } from "./components/MicroApps";
 import { scanMicroApps, alignMicroApps, missingMicroApps, channelScan, CHANNELS } from "./lib/microapps";
 import { LoomSync, FabricPickers } from "./components/Fabric";
-import { scanFabricFolder, analyzeFabric } from "./lib/fabric";
+import { JarView } from "./components/Jars";
+import { resetDecompile } from "./lib/jars";
+import { scanFabricFolder, analyzeFabric, fabricRetrofit } from "./lib/fabric";
 import { VersionNames, VersionNamesPanel } from "./components/VersionNames";
+import { ConverterUpload, ConverterPlan, ConverterRun } from "./components/Converter";
+import { rawFiles, proposePlan } from "./lib/convert";
 import { loadNames, saveNames, validate, clean } from "./lib/names";
 
 // Version names are user-editable per workspace (components/VersionNames.jsx); L = [base, customised, new release]
@@ -32,10 +36,15 @@ const WORKSPACES = {
     desc: (L) => `Compare the ${L[0]} and ${L[1]} monoliths (web or mobile) with the ${L[2]} micro-app architecture — every form, controller, presentation / business controller and user widget is located in its new micro app first.`,
     covers: ["Micro-app map", "FormForge · forms", "CtrlSync · form controllers", "MVC Bridge", "COMP-are · user widgets"],
   },
+  convert: {
+    title: "Converter", sub: "Monolith to micro app", ico: "⇢", short: "Converter",
+    desc: () => "Rebuild a monolith Visualizer project as micro-app projects — container, feature micro apps, CommonsMA and ResourcesMA — using only the monolith's own code. Written straight into a folder you choose.",
+    covers: ["Editable conversion plan", "Cross-app reference rewrites", "Micro-app project structure", "Full change report"],
+  },
   fabric: {
     title: "Fabric", sub: "Fabric app comparison", ico: "≋", short: "Fabric",
-    desc: (L) => `Compare two exported Fabric apps — ${L[0]} and ${L[1]} — service by service with LoomSync.`,
-    covers: ["Integration", "Object", "Orchestration", "Identity", "Workflow & app manifest"],
+    desc: (L) => `Compare exported Fabric apps — ${L[0]}, ${L[1]} and ${L[2]} (any two, or all three for the retrofit view) — service by service with LoomSync, plus every Java jar decompiled and compared.`,
+    covers: ["Integration", "Object", "Orchestration", "Identity", "Workflow & app manifest", "Java JARs · decompiled"],
   },
 };
 
@@ -61,14 +70,20 @@ const uiMenu = (L) => [
 
 const maMenu = (L) => [{ id: "home", ico: "❖", label: "Micro-app map", desc: `Where monolith items live in ${L[2]}` }, ...uiMenu(L).slice(1)];
 
+const CV_MENU = [
+  { id: "cv-plan", ico: "▦", label: "Conversion plan", desc: "Monolith module → micro app" },
+  { id: "cv-run", ico: "⇢", label: "Convert & report", desc: "Write the micro-app projects" },
+];
+
 const fabMenu = (L) => [
-  { id: "fab-overview", ico: "≋", label: "LoomSync Overview", desc: `All service types · ${L[0]} vs ${L[1]}` },
+  { id: "fab-overview", ico: "≋", label: "LoomSync Overview", desc: `All service types · ${L.join(" · ")}` },
   { id: "fab-Integration", ico: "⇄", label: "Integration", desc: "Endpoints & operations" },
   { id: "fab-Object", ico: "◫", label: "Object", desc: "Objects, fields & mappings" },
   { id: "fab-Orchestration", ico: "⛓", label: "Orchestration", desc: "Composite & looping operations" },
   { id: "fab-Identity", ico: "🔑", label: "Identity", desc: "Identity providers" },
   { id: "fab-Workflow", ico: "↯", label: "Workflow", desc: "Workflow services" },
   { id: "fab-App", ico: "▣", label: "App manifest", desc: "Service lists" },
+  { id: "jars", ico: "☕", label: "Java JARs", desc: "Decompiled jar comparison" },
 ];
 
 // Match files across the three versions by key, then extract + compare each (shared by CtrlSync and MVC Bridge).
@@ -115,17 +130,32 @@ export default function App() {
   const [maAligned, setMaAligned] = useState(null); // { picked: [R21, KBZ, aligned R26], report, missing, channel }
   const [maAligning, setMaAligning] = useState(null);
   const [maNav, setMaNav] = useState("home");
+  // Converter: monolith -> micro apps
+  const [cvChannel, setCvChannel] = useState("web");
+  const [cvPick, setCvPick] = useState([null, null]); // [{scan, raw} monolith, micro-app reference]
+  const [cvPlan, setCvPlan] = useState(null);
+  const [cvPlanning, setCvPlanning] = useState(null);
+  const [cvNav, setCvNav] = useState("cv-plan");
+  const [cvRun, setCvRun] = useState(null);
   // Fabric
-  const [fab, setFab] = useState([null, null]);
+  const [fab, setFab] = useState([null, null, null]); // Fabric exports: base, customised, new release (any two)
   const [fabEntered, setFabEntered] = useState(false);
   const [fabNav, setFabNav] = useState("fab-overview");
-  const [fabBulk, setFabBulk] = useState(null);
-  const [fabAnalyzing, setFabAnalyzing] = useState(null);
+  const [fabBulk, setFabBulk] = useState({}); // "ab" (slot positions) -> analysis of that pair
+  const [fabAnalyzing, setFabAnalyzing] = useState({}); // "ab" -> progress
+  const [fabPair, setFabPair] = useState(null); // [a, b] currently shown
   const [fabSel, setFabSel] = useState(null); // { type, svc, unit }
+  const [jarFocus, setJarFocus] = useState(null); // Java JARs: { base, item } of the opened jar
 
-  const entered = { ui: uiEntered, ma: !!maAligned, fabric: fabEntered };
+  const entered = { ui: uiEntered, ma: !!maAligned, convert: !!cvPlan, fabric: fabEntered };
   const uiReady = picked[0] && picked[1] && !validate(names.ui);
-  const fabReady = fab[0] && fab[1] && !validate(names.fabric);
+  const fabReady = fab.filter(Boolean).length >= 2 && !validate(names.fabric);
+  // pairs that can be compared; the customised · new release pair first (what a 2-export comparison shows)
+  const fabPairs = [[1, 2], [0, 1], [0, 2]].filter(([a, b]) => fab[a] && fab[b]);
+  const curPair = fabPair && fabPairs.some(([a, b]) => a === fabPair[0] && b === fabPair[1]) ? fabPair : fabPairs[0] || null;
+  const pk = (p) => `${p[0]}${p[1]}`;
+  const fabAll = fab.every(Boolean);
+  const fabRetro = useMemo(() => (fabAll && fabBulk["01"] && fabBulk["02"] && fabBulk["12"] ? fabricRetrofit(fabBulk["01"], fabBulk["02"], fabBulk["12"]) : null), [fabAll, fabBulk]);
   const maReady = maPick[0] && maPick[1] && maPick[2] && !validate(names.ma);
 
   const onFolder = (i, fileList) => {
@@ -136,10 +166,22 @@ export default function App() {
     const scan = i === 2 ? scanMicroApps(fileList, scanFolder) : scanFolder(fileList);
     setMaPick((p) => { const c = [...p]; c[i] = scan; return c; });
   };
+  const onCvFolder = (i, fileList) => {
+    const v = i === 0 ? { scan: scanFolder(fileList), raw: rawFiles(fileList) } : scanMicroApps(fileList, scanFolder);
+    setCvPick((p) => { const c = [...p]; c[i] = v; return c; });
+  };
+  const buildCvPlan = async () => {
+    setCvPlanning({ running: true, step: "Matching modules to micro apps" });
+    try {
+      const plan = await proposePlan(cvPick[0].scan, cvPick[0].raw.files, cvPick[1], cvChannel);
+      setCvPlan(plan); setCvNav("cv-plan"); setCvRun(null);
+      setCvPlanning(null);
+    } catch (e) { setCvPlanning({ running: false, step: `Could not build the plan: ${e.message || e}` }); }
+  };
   const onFabFolder = (i, fileList) => {
     const scan = scanFabricFolder(fileList);
     setFab((p) => { const c = [...p]; c[i] = scan; return c; });
-    setFabBulk(null); setFabSel(null);
+    setFabBulk({}); setFabAnalyzing({}); setFabSel(null); setJarFocus(null); resetDecompile();
   };
   const startMa = async () => {
     const C = CHANNELS[maChannel];
@@ -151,22 +193,31 @@ export default function App() {
   };
 
   useEffect(() => {
-    if (mode === "fabric" && fabEntered && fabReady && !fabBulk && !(fabAnalyzing && fabAnalyzing.running)) {
-      analyzeFabric(fab, L.fabric, setFabAnalyzing).then(setFabBulk);
-    }
+    if (mode !== "fabric" || !fabEntered || !curPair) return;
+    if (Object.values(fabAnalyzing).some((x) => x && x.running)) return; // one pair at a time
+    const want = [curPair, ...(fabAll && fabNav === "fab-overview" ? [[0, 1], [0, 2], [1, 2]] : [])];
+    const next = want.find((p) => !fabBulk[pk(p)]);
+    if (!next) return;
+    const key = pk(next);
+    const progress = (x) => setFabAnalyzing((m) => ({ ...m, [key]: x }));
+    progress({ done: 0, total: 0, running: true });
+    analyzeFabric([fab[next[0]], fab[next[1]]], [L.fabric[next[0]], L.fabric[next[1]]], progress)
+      .then((res) => setFabBulk((m) => ({ ...m, [key]: res })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, fabEntered, fab, fabBulk]);
+  }, [mode, fabEntered, fab, fabBulk, fabAnalyzing, curPair && pk(curPair), fabNav]);
 
   // "New project" clears only the current workspace and returns to its upload screen
   const reset = {
     ui: () => { setUiEntered(false); setPicked([null, null, null]); setUiNav("home"); },
     ma: () => { setMaAligned(null); setMaPick([null, null, null]); setMaAligning(null); setMaNav("home"); },
-    fabric: () => { setFabEntered(false); setFab([null, null]); setFabBulk(null); setFabAnalyzing(null); setFabSel(null); setFabNav("fab-overview"); },
+    convert: () => { setCvPlan(null); setCvPick([null, null]); setCvPlanning(null); setCvRun(null); setCvNav("cv-plan"); },
+    fabric: () => { setFabEntered(false); setFab([null, null, null]); setFabBulk({}); setFabAnalyzing({}); setFabPair(null); setFabSel(null); setJarFocus(null); resetDecompile(); setFabNav("fab-overview"); },
   };
   const status = {
     ui: uiEntered ? `Loaded · ${L.ui.filter((m, i) => picked[i]).join(" · ")}` : picked.some(Boolean) ? `${picked.filter(Boolean).length}/3 projects picked` : "Not loaded yet",
+    convert: cvPlan ? `Plan ready · ${cvPlan.rows.length} modules` : cvPick.some(Boolean) ? `${cvPick.filter(Boolean).length}/2 folders picked` : "Not loaded yet",
     ma: maAligned ? `Loaded · ${CHANNELS[maAligned.channel].label}` : maPick.some(Boolean) ? `${maPick.filter(Boolean).length}/3 folders picked` : "Not loaded yet",
-    fabric: fabEntered ? `Loaded · ${names3(L.fabric)}` : fab.some(Boolean) ? `${fab.filter(Boolean).length}/2 exports picked` : "Not loaded yet",
+    fabric: fabEntered ? `Loaded · ${L.fabric.filter((x, i) => fab[i]).join(" · ")}` : fab.some(Boolean) ? `${fab.filter(Boolean).length}/3 exports picked` : "Not loaded yet",
   };
   const shellProps = (m, nav, setNav, menu, foot) => ({ hidden: mode !== m, side, nav, setNav, openGroups, setOpenGroups, menu, workspace: WORKSPACES[m], foot });
 
@@ -186,15 +237,15 @@ export default function App() {
           </div>
         )}
         <div className="rt">
-          {mode && entered[mode] && <button className="pillbtn" onClick={() => setNamesOpen((v) => !v)}>✎ Version names</button>}
+          {mode && entered[mode] && mode !== "convert" && <button className="pillbtn" onClick={() => setNamesOpen((v) => !v)}>✎ Version names</button>}
           {mode && <button className="pillbtn" onClick={() => setMode(null)}>⌂ Workspaces</button>}
           {mode && entered[mode] && <button className="pillbtn" onClick={reset[mode]}>New project</button>}
         </div>
       </div>
 
-      {namesOpen && mode && entered[mode] && (
+      {namesOpen && mode && entered[mode] && mode !== "convert" && (
         <VersionNamesPanel key={mode} ws={mode} value={names[mode]} onClose={() => setNamesOpen(false)}
-          onApply={(list) => { setNamesFor(mode, list); if (mode === "fabric") { setFabBulk(null); setFabAnalyzing(null); } }} />
+          onApply={(list) => { setNamesFor(mode, list); if (mode === "fabric") { setFabBulk({}); setFabAnalyzing({}); } }} />
       )}
       {!mode && (
         <div style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 18px" }}>
@@ -212,6 +263,10 @@ export default function App() {
             <MicroAppUpload channel={maChannel} setChannel={setMaChannel} pick={maPick} onFolder={onMaFolder}
               canEnter={maReady} enter={startMa} aligning={maAligning} labels={L.ma}
               editor={<VersionNames ws="ma" value={names.ma} onChange={(x) => setNamesFor("ma", x)} />} />
+          )}
+          {mode === "convert" && (
+            <ConverterUpload channel={cvChannel} setChannel={setCvChannel} pick={cvPick} onFolder={onCvFolder}
+              canPlan={!!(cvPick[0] && cvPick[1])} onPlan={buildCvPlan} planning={cvPlanning} />
           )}
           {mode === "fabric" && (
             <FabricUpload fab={fab} onFabFolder={onFabFolder} canEnter={fabReady} enter={() => { setFabEntered(true); setFabNav("fab-overview"); }}
@@ -233,13 +288,26 @@ export default function App() {
             home={<MicroAppMap aligned={maAligned} goto={setMaNav} labels={L.ma} />} />
         </Shell>
       )}
+      {cvPlan && (
+        <Shell {...shellProps("convert", cvNav, setCvNav, CV_MENU, `${CHANNELS[cvPlan.channel].label} · ${cvPlan.rows.length} modules`)}>
+          {cvNav === "cv-plan" && <ConverterPlan plan={cvPlan} setPlan={setCvPlan} goRun={() => setCvNav("cv-run")} />}
+          {cvNav === "cv-run" && <ConverterRun plan={cvPlan} mono={cvPick[0]} ma={cvPick[1]} run={cvRun} setRun={setCvRun} />}
+        </Shell>
+      )}
       {fabEntered && (
-        <Shell {...shellProps("fabric", fabNav, setFabNav, fabMenu(L.fabric), `${L.fabric[0]} · ${L.fabric[1]} Fabric exports loaded`)}>
+        <Shell {...shellProps("fabric", fabNav, setFabNav, fabMenu(L.fabric), `${L.fabric.filter((x, i) => fab[i]).join(" · ")} Fabric exports loaded`)}>
           {fabNav.startsWith("fab-") && (
-            <LoomSync type={fabNav === "fab-overview" ? null : fabNav.slice(4)} fab={fab} onFabFolder={onFabFolder} labels={L.fabric}
-              bulk={fabBulk} analyzing={fabAnalyzing} sel={fabSel}
+            <LoomSync type={fabNav === "fab-overview" ? null : fabNav.slice(4)} fab={fab} onFabFolder={onFabFolder} names={L.fabric}
+              pairs={fabPairs} pair={curPair} setPair={(p) => { setFabPair(p); setFabSel(null); }}
+              bulk={curPair ? fabBulk[pk(curPair)] : null} analyzing={curPair ? fabAnalyzing[pk(curPair)] : null}
+              retro={fabRetro} retroProgress={fabAll ? ["01", "02", "12"].map((k) => (fabBulk[k] ? "done" : fabAnalyzing[k] && fabAnalyzing[k].running ? fabAnalyzing[k] : "waiting")) : null}
+              sel={fabSel}
               setSel={(x) => { setFabSel(x); if (x && x.type) setFabNav("fab-" + x.type); }}
               goType={(t) => { setFabSel(null); setFabNav("fab-" + t); }} />
+          )}
+          {fabNav === "jars" && (
+            <JarView fab={fab} names={L.fabric} pairs={fabPairs} pair={curPair} setPair={(p) => { setFabPair(p); setJarFocus(null); }}
+              focus={jarFocus} setFocus={setJarFocus} />
           )}
         </Shell>
       )}
@@ -447,13 +515,13 @@ function FabricUpload({ fab, onFabFolder, canEnter, enter, names, setNames }) {
       <div className="crumb">Step 1 — load the two exported Fabric apps, then start the comparison.</div>
       <div className="rules">
         Pick each exported Fabric app folder — the folder that contains <code>Apps/</code> (Identity, Integration, Object,
-        Orchestration, Workflow services). <b>JAR files are skipped.</b> Everything runs in your browser — nothing is uploaded.
+        Orchestration, Workflow services). Jars in <code>_JARs</code> are compared in <b>Java JARs</b>. Everything runs in your browser — only the Java JARs view sends jars to the local dev server to decompile them, and they never leave this machine.
       </div>
       <VersionNames ws="fabric" value={names} onChange={setNames} />
       <FabricPickers fab={fab} onFabFolder={onFabFolder} labels={N.map((x) => x.name)} subs={N.map((x) => x.sub)} />
       <div style={{ marginTop: 14 }}>
         <button className="btn" disabled={!canEnter} onClick={enter}>Start comparison →</button>
-        <span className="tag" style={{ marginLeft: 10 }}>Both exports required.</span>
+        <span className="tag" style={{ marginLeft: 10 }}>Any two exports are enough · all three adds the retrofit view.</span>
       </div>
     </div>
   );
