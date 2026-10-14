@@ -17,6 +17,8 @@ import { scanFabricFolder, analyzeFabric, fabricRetrofit } from "./lib/fabric";
 import { VersionNames, VersionNamesPanel } from "./components/VersionNames";
 import { ConverterUpload, ConverterPlan, ConverterRun } from "./components/Converter";
 import { rawFiles, proposePlan } from "./lib/convert";
+import { inventory, buildPlan, POLICY_DEFAULT } from "./lib/mapplan";
+import { VisualizeUpload, PlanBar, FlowView, AppsView, ModulesView, ReviewView, ModuleDrawer } from "./components/Visualize";
 import { loadNames, saveNames, validate, clean } from "./lib/names";
 
 // Version names are user-editable per workspace (components/VersionNames.jsx); L = [base, customised, new release]
@@ -35,6 +37,11 @@ const WORKSPACES = {
     title: "Visualizer", sub: "Monolith to micro app", ico: "❖", short: "Micro app",
     desc: (L) => `Compare the ${L[0]} and ${L[1]} monoliths (web or mobile) with the ${L[2]} micro-app architecture — every form, controller, presentation / business controller and user widget is located in its new micro app first.`,
     covers: ["Micro-app map", "FormForge · forms", "CtrlSync · form controllers", "MVC Bridge", "COMP-are · user widgets"],
+  },
+  visualize: {
+    title: "Visualize", sub: "Monolith to micro app", ico: "◎", short: "Visualize",
+    desc: () => "See where every module and form of a monolith goes in the micro-app architecture — animated flow, micro-app board and form-level detail — try the placement options, adjust single modules, then agree the plan. No reference app needed.",
+    covers: ["Animated module → micro-app flow", "Micro-app board", "Modules & forms detail", "Review & agree"],
   },
   convert: {
     title: "Converter", sub: "Monolith to micro app", ico: "⇢", short: "Converter",
@@ -73,6 +80,13 @@ const maMenu = (L) => [{ id: "home", ico: "❖", label: "Micro-app map", desc: `
 const CV_MENU = [
   { id: "cv-plan", ico: "▦", label: "Conversion plan", desc: "Monolith module → micro app" },
   { id: "cv-run", ico: "⇢", label: "Convert & report", desc: "Write the micro-app projects" },
+];
+
+const VZ_MENU = [
+  { id: "vz-flow", ico: "◎", label: "Flow overview", desc: "Modules → micro apps" },
+  { id: "vz-apps", ico: "▦", label: "Micro apps", desc: "What each one will hold" },
+  { id: "vz-modules", ico: "☰", label: "Modules & forms", desc: "Every form and its destination" },
+  { id: "vz-plan", ico: "✓", label: "Review & agree", desc: "Choices, overrides, sign-off" },
 ];
 
 const fabMenu = (L) => [
@@ -137,6 +151,19 @@ export default function App() {
   const [cvPlanning, setCvPlanning] = useState(null);
   const [cvNav, setCvNav] = useState("cv-plan");
   const [cvRun, setCvRun] = useState(null);
+  // Visualize: monolith -> micro apps from the built-in R26 map
+  const [vzChannel, setVzChannel] = useState("web");
+  const [vzPick, setVzPick] = useState(null); // { name, files }
+  const [vzEntered, setVzEntered] = useState(false);
+  const [vzNav, setVzNav] = useState("vz-flow");
+  const [vzPolicy, setVzPolicy] = useState(POLICY_DEFAULT);
+  const [vzOverrides, setVzOverrides] = useState({});
+  const [vzOpen, setVzOpen] = useState(null); // module shown in the drawer
+  const [vzSel, setVzSel] = useState(null); // module selected in Modules & forms
+  const [vzAgreed, setVzAgreed] = useState(null);
+  const vzInv = useMemo(() => (vzPick ? inventory(vzPick.files, vzChannel) : null), [vzPick, vzChannel]);
+  const vzPlan = useMemo(() => (vzInv && vzEntered ? buildPlan(vzInv, vzChannel, vzPolicy, vzOverrides) : null), [vzInv, vzEntered, vzChannel, vzPolicy, vzOverrides]);
+  const vzKey = vzPick ? `retrofit-studio:vz-agreed:${vzPick.name}:${vzChannel}` : null;
   // Fabric
   const [fab, setFab] = useState([null, null, null]); // Fabric exports: base, customised, new release (any two)
   const [fabEntered, setFabEntered] = useState(false);
@@ -147,7 +174,7 @@ export default function App() {
   const [fabSel, setFabSel] = useState(null); // { type, svc, unit }
   const [jarFocus, setJarFocus] = useState(null); // Java JARs: { base, item } of the opened jar
 
-  const entered = { ui: uiEntered, ma: !!maAligned, convert: !!cvPlan, fabric: fabEntered };
+  const entered = { ui: uiEntered, ma: !!maAligned, visualize: vzEntered && !!vzPlan, convert: !!cvPlan, fabric: fabEntered };
   const uiReady = picked[0] && picked[1] && !validate(names.ui);
   const fabReady = fab.filter(Boolean).length >= 2 && !validate(names.fabric);
   // pairs that can be compared; the customised · new release pair first (what a 2-export comparison shows)
@@ -177,6 +204,25 @@ export default function App() {
       setCvPlan(plan); setCvNav("cv-plan"); setCvRun(null);
       setCvPlanning(null);
     } catch (e) { setCvPlanning({ running: false, step: `Could not build the plan: ${e.message || e}` }); }
+  };
+  const onVzFolder = (fileList) => {
+    const raw = rawFiles(fileList);
+    const first = fileList[0] ? (fileList[0].webkitRelativePath || "").split("/")[0] : "";
+    setVzPick({ name: first || "project", files: raw.files });
+    setVzOverrides({}); setVzOpen(null); setVzSel(null);
+  };
+  const vzSetOverride = (module, app) => setVzOverrides((o) => { const n = { ...o }; if (app) n[module] = app; else delete n[module]; return n; });
+  useEffect(() => { // previously agreed plan for this project + channel
+    if (!vzKey) { setVzAgreed(null); return; }
+    let rec = null;
+    try { rec = JSON.parse(localStorage.getItem(vzKey) || "null"); } catch { /* storage unavailable */ }
+    setVzAgreed(rec);
+    if (rec) { setVzPolicy({ ...POLICY_DEFAULT, ...rec.policy }); setVzOverrides(rec.overrides || {}); } // reopen on the agreed plan
+  }, [vzKey]);
+  const vzAgree = () => {
+    const rec = { date: new Date().toLocaleString(), policy: vzPolicy, overrides: vzOverrides, stats: vzPlan.stats };
+    try { localStorage.setItem(vzKey, JSON.stringify(rec)); } catch { /* storage unavailable: kept for this session */ }
+    setVzAgreed(rec);
   };
   const onFabFolder = (i, fileList) => {
     const scan = scanFabricFolder(fileList);
@@ -210,11 +256,13 @@ export default function App() {
   const reset = {
     ui: () => { setUiEntered(false); setPicked([null, null, null]); setUiNav("home"); },
     ma: () => { setMaAligned(null); setMaPick([null, null, null]); setMaAligning(null); setMaNav("home"); },
+    visualize: () => { setVzEntered(false); setVzPick(null); setVzPolicy(POLICY_DEFAULT); setVzOverrides({}); setVzOpen(null); setVzSel(null); setVzNav("vz-flow"); },
     convert: () => { setCvPlan(null); setCvPick([null, null]); setCvPlanning(null); setCvRun(null); setCvNav("cv-plan"); },
     fabric: () => { setFabEntered(false); setFab([null, null, null]); setFabBulk({}); setFabAnalyzing({}); setFabPair(null); setFabSel(null); setJarFocus(null); resetDecompile(); setFabNav("fab-overview"); },
   };
   const status = {
     ui: uiEntered ? `Loaded · ${L.ui.filter((m, i) => picked[i]).join(" · ")}` : picked.some(Boolean) ? `${picked.filter(Boolean).length}/3 projects picked` : "Not loaded yet",
+    visualize: vzEntered && vzPlan ? `${vzPick.name} · ${vzPlan.stats.forms} forms → ${vzPlan.stats.apps} micro apps${vzAgreed ? " · agreed" : ""}` : vzPick ? `${vzPick.name} picked` : "Not loaded yet",
     convert: cvPlan ? `Plan ready · ${cvPlan.rows.length} modules` : cvPick.some(Boolean) ? `${cvPick.filter(Boolean).length}/2 folders picked` : "Not loaded yet",
     ma: maAligned ? `Loaded · ${CHANNELS[maAligned.channel].label}` : maPick.some(Boolean) ? `${maPick.filter(Boolean).length}/3 folders picked` : "Not loaded yet",
     fabric: fabEntered ? `Loaded · ${L.fabric.filter((x, i) => fab[i]).join(" · ")}` : fab.some(Boolean) ? `${fab.filter(Boolean).length}/3 exports picked` : "Not loaded yet",
@@ -237,13 +285,13 @@ export default function App() {
           </div>
         )}
         <div className="rt">
-          {mode && entered[mode] && mode !== "convert" && <button className="pillbtn" onClick={() => setNamesOpen((v) => !v)}>✎ Version names</button>}
+          {mode && entered[mode] && mode !== "convert" && mode !== "visualize" && <button className="pillbtn" onClick={() => setNamesOpen((v) => !v)}>✎ Version names</button>}
           {mode && <button className="pillbtn" onClick={() => setMode(null)}>⌂ Workspaces</button>}
           {mode && entered[mode] && <button className="pillbtn" onClick={reset[mode]}>New project</button>}
         </div>
       </div>
 
-      {namesOpen && mode && entered[mode] && mode !== "convert" && (
+      {namesOpen && mode && entered[mode] && mode !== "convert" && mode !== "visualize" && (
         <VersionNamesPanel key={mode} ws={mode} value={names[mode]} onClose={() => setNamesOpen(false)}
           onApply={(list) => { setNamesFor(mode, list); if (mode === "fabric") { setFabBulk({}); setFabAnalyzing({}); } }} />
       )}
@@ -263,6 +311,10 @@ export default function App() {
             <MicroAppUpload channel={maChannel} setChannel={setMaChannel} pick={maPick} onFolder={onMaFolder}
               canEnter={maReady} enter={startMa} aligning={maAligning} labels={L.ma}
               editor={<VersionNames ws="ma" value={names.ma} onChange={(x) => setNamesFor("ma", x)} />} />
+          )}
+          {mode === "visualize" && (
+            <VisualizeUpload channel={vzChannel} setChannel={setVzChannel} pick={vzPick && { ...vzPick, inv: vzInv }} onFolder={onVzFolder}
+              go={() => { setVzEntered(true); setVzNav("vz-flow"); }} />
           )}
           {mode === "convert" && (
             <ConverterUpload channel={cvChannel} setChannel={setCvChannel} pick={cvPick} onFolder={onCvFolder}
@@ -286,6 +338,29 @@ export default function App() {
         <Shell {...shellProps("ma", maNav, setMaNav, maMenu(L.ma), `${CHANNELS[maAligned.channel].label} · ${maAligned.picked[2].microApps} ${L.ma[2]} projects`)}>
           <VisualizerWorkspace key={L.ma.join("|")} picked={maAligned.picked} labels={L.ma} nav={maNav} setNav={setMaNav} active={mode === "ma"}
             home={<MicroAppMap aligned={maAligned} goto={setMaNav} labels={L.ma} />} />
+        </Shell>
+      )}
+      {vzEntered && vzPlan && (
+        <Shell {...shellProps("visualize", vzNav, setVzNav, VZ_MENU, `${vzPick.name} · ${CHANNELS[vzChannel].label} · R26 ${vzPlan.release} map`)}>
+          {(() => {
+            const header = (
+              <>
+                <h2 className="page">{VZ_MENU.find((x) => x.id === vzNav).label}</h2>
+                <div className="crumb">{vzPick.name} → micro-app architecture · {CHANNELS[vzChannel].label}</div>
+                <PlanBar policy={vzPolicy} setPolicy={setVzPolicy} overrides={vzOverrides} agreed={vzAgreed} />
+              </>
+            );
+            const open = (m) => setVzOpen(m);
+            return (
+              <>
+                {vzNav === "vz-flow" && <FlowView plan={vzPlan} open={open} header={header} />}
+                {vzNav === "vz-apps" && <AppsView plan={vzPlan} open={open} header={header} />}
+                {vzNav === "vz-modules" && <ModulesView plan={vzPlan} sel={vzSel} setSel={setVzSel} setOverride={vzSetOverride} header={header} />}
+                {vzNav === "vz-plan" && <ReviewView plan={vzPlan} inv={vzInv} setPolicy={setVzPolicy} overrides={vzOverrides} setOverride={vzSetOverride} agreed={vzAgreed} agree={vzAgree} projectName={vzPick.name} header={header} />}
+                {vzOpen && <ModuleDrawer module={vzOpen} plan={vzPlan} setOverride={vzSetOverride} onClose={() => setVzOpen(null)} />}
+              </>
+            );
+          })()}
         </Shell>
       )}
       {cvPlan && (
