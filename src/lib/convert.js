@@ -14,6 +14,7 @@
 //   channel     one channel at a time; output written straight into a folder the user picks
 
 import { channelScan, CHANNELS, alignMicroApps } from "./microapps.js";
+import { R26_MAP, nearestApp } from "./mapplan.js";
 
 // build output and VCS folders — never part of a project's source
 export const SKIP_DIRS = [".git", "node_modules", "jssrc", "binaries", "build", "temp", "ssm_temp"];
@@ -147,30 +148,48 @@ function patchNavigationManager(src) {
 // rewrite one JS file for the micro app it is written into
 function rewriteJs(text, ctx) {
   const { app, shared, moduleApp, formIndex, path } = ctx;
+  const moduleApps = ctx.moduleApps || new Map();
+  const appOfForm = ctx.appOfForm || ((m) => moduleApp.get(m));
+  const local = (module) => !shared && moduleApps.has(module) && moduleApps.get(module).has(app); // split module with a copy here
+  const L = ctx.layout; // R26 layout: monolith module -> parts (micro app + module name)
   const log = [];
   const unresolved = { getModule: 0, navigation: 0 };
   const needs = (target) => shared || target !== app;
   const edits = [];
   // getModule("X") / getModule('X')
   for (const m of text.matchAll(/getModule\(\s*(["'])([\w$.]+)\1\s*\)/g)) {
+    if (L && L.has(m[2])) {
+      const t = L.resolve(m[2], app, shared, ctx.self);
+      if (!shared && t.app === app) { if (t.name !== m[2]) edits.push({ at: m.index, len: m[0].length, after: `getModule("${t.name}")`, rule: "getModule → R26 module name", before: m[0] }); }
+      else edits.push({ at: m.index, len: m[0].length, after: `getModule({"moduleName" : "${t.name}", "appName" : "${t.app}"})`, rule: "getModule → other micro app" + (shared ? " (shared code)" : ""), before: m[0] });
+      continue;
+    }
     const target = moduleApp.get(m[2]);
     if (!target) continue;
-    if (!needs(target)) continue;
+    if (!needs(target) || local(m[2])) continue;
     const after = `getModule({"moduleName" : "${m[2]}", "appName" : "${target}"})`;
     edits.push({ at: m.index, len: m[0].length, after, rule: "getModule → other micro app" + (shared ? " (shared code)" : ""), before: m[0] });
   }
   for (const m of text.matchAll(/getModule\(\s*(?![\s"'{)])/g)) { void m; unresolved.getModule++; }
   // named define("Module/...") of form controllers
   for (const m of text.matchAll(/(^|\n)(\s*define\(\s*)(["'])([\w$]+)\/([^"']*)\3/g)) {
-    if (!moduleApp.has(m[4])) continue;
+    if (!moduleApp.has(m[4]) && !(L && L.has(m[4]))) continue;
     const at = m.index + m[1].length + m[2].length;
-    edits.push({ at, len: m[0].length - m[1].length - m[2].length, after: `${m[3]}${app}/${m[4]}/${m[5]}${m[3]}`, rule: "define name → app-prefixed", before: `${m[3]}${m[4]}/${m[5]}${m[3]}` });
+    const nm = L && L.has(m[4]) ? L.resolve(m[4], app, false, ctx.self).name : m[4];
+    edits.push({ at, len: m[0].length - m[1].length - m[2].length, after: `${m[3]}${app}/${nm}/${m[5]}${m[3]}`, rule: "define name → app-prefixed", before: `${m[3]}${m[4]}/${m[5]}${m[3]}` });
   }
   // require(["Module/frmX", "Module/frmXController"]) — R26 prefixes the micro app: "AboutUsMA/FeedbackModule/frmCustomerFeedback"
   for (const r of text.matchAll(/require\(\s*(\[[^\]]*\]|(["'])[^"']*\2)/g)) {
     const base = r.index + r[0].indexOf(r[1]);
     for (const m of r[1].matchAll(/(["'])([\w$]+)\/([\w$/]+)\1/g)) {
-      const target = moduleApp.get(m[2]);
+      if (L && L.has(m[2])) {
+        const frm = m[3].split("/").pop().replace(/Controller(Actions)?$/, "");
+        const t = L.formPart(m[2], frm) || L.resolve(m[2], app, shared, ctx.self);
+        const after = !shared && t.app === app ? `${m[1]}${t.name}/${m[3]}${m[1]}` : `${m[1]}${t.app}/${t.name}/${m[3]}${m[1]}`;
+        if (after !== m[0]) edits.push({ at: base + m.index, len: m[0].length, after, rule: t.app === app && !shared ? "require path → R26 module name" : "require path → app-prefixed (other micro app)" + (shared ? " (shared code)" : ""), before: m[0] });
+        continue;
+      }
+      const target = moduleApp.has(m[2]) ? appOfForm(m[2], m[3].split("/").pop().replace(/Controller(Actions)?$/, "")) : null;
       if (!target || !needs(target)) continue;
       edits.push({ at: base + m.index, len: m[0].length, after: `${m[1]}${target}/${m[2]}/${m[3]}${m[1]}`, rule: "require path → app-prefixed (other micro app)" + (shared ? " (shared code)" : ""), before: m[0] });
     }
@@ -179,8 +198,17 @@ function rewriteJs(text, ctx) {
   const navRx = /(\.navigateTo\(\s*|new\s+kony\.mvc\.Navigation\(\s*)(["'])((?:[\w$]+\/)?[\w$]+)\2/g;
   for (const m of text.matchAll(navRx)) {
     const lit = m[3];
+    if (L && lit.includes("/") && L.has(lit.split("/")[0])) {
+      const [mod, frm] = [lit.split("/")[0], lit.split("/").pop()];
+      const t = L.formPart(mod, frm);
+      if (!t) continue;
+      const at = m.index + m[1].length;
+      if (!shared && t.app === app) { if (t.name !== mod) edits.push({ at, len: m[0].length - m[1].length, after: `${m[2]}${t.name}/${frm}${m[2]}`, rule: "navigation → R26 module name", before: `${m[2]}${lit}${m[2]}` }); }
+      else edits.push({ at, len: m[0].length - m[1].length, after: `{"appName" : "${t.app}", "friendlyName" : "${frm}"}`, rule: "navigation → other micro app" + (shared ? " (shared code)" : ""), before: `${m[2]}${lit}${m[2]}` });
+      continue;
+    }
     let apps;
-    if (lit.includes("/")) { const mod = lit.split("/")[0]; apps = moduleApp.has(mod) && formIndex.has(lit.split("/").pop()) ? new Set([moduleApp.get(mod)]) : null; }
+    if (lit.includes("/")) { const mod = lit.split("/")[0], frm = lit.split("/").pop(); apps = moduleApp.has(mod) && formIndex.has(frm) ? new Set([appOfForm(mod, frm)]) : null; }
     else apps = formIndex.get(lit) || null;
     if (!apps) continue;
     if (apps.size > 1 && !shared && apps.has(app)) continue; // the caller's own micro app has a form of that name — a plain name resolves there
@@ -191,6 +219,20 @@ function rewriteJs(text, ctx) {
     edits.push({ at, len: m[0].length - m[1].length, after: `{"appName" : "${target}", "friendlyName" : "${lit}"}`, rule: "navigation → other micro app" + (shared ? " (shared code)" : ""), before: `${m[2]}${lit}${m[2]}` });
   }
   for (const m of text.matchAll(/(\.navigateTo\(|new\s+kony\.mvc\.Navigation\()\s*(?![\s"'{)])/g)) { void m; unresolved.navigation++; }
+  // remaining "Module/…" strings of a module that has moved: controller ids (define dependency lists,
+  // controllerActions = [...]) follow the app-prefixed define names; form paths kept as data take the module's new
+  // name, as R26 writes them ("form": "AuthUIModule/frmLogin", even from another micro app)
+  if (L) {
+    const taken = (i) => edits.some((e) => i >= e.at && i < e.at + e.len);
+    for (const m of text.matchAll(/(["'])([\w$]+)\/((?:user)?frm[\w$]*)\1/g)) {
+      if (!L.has(m[2]) || taken(m.index)) continue;
+      const id = m[3], frm = id.replace(/^user/, "").replace(/Controller(Actions)?$/, "");
+      const t = L.formPart(m[2], frm) || L.resolve(m[2], app, shared, ctx.self);
+      const ctrl = /Controller(Actions)?$/.test(id) || id.startsWith("user");
+      const after = ctrl ? `${m[1]}${t.app}/${t.name}/${id}${m[1]}` : `${m[1]}${t.name}/${id}${m[1]}`;
+      if (after !== m[0]) edits.push({ at: m.index, len: m[0].length, after, rule: ctrl ? "controller id → app-prefixed R26 module" : "form path (data) → R26 module name", before: m[0] });
+    }
+  }
   // form names of other micro apps used as data (frmName = "frmX"; navigateTo(frmName)) — cannot be rewritten
   // safely; reported per file. Comparisons with the current form's id (=== "frmX", case "frmX":) are left out.
   const dataUses = [];
@@ -216,13 +258,254 @@ function rewriteJs(text, ctx) {
   return { text: out, log, unresolved, dataUses };
 }
 
+// ---------------------------------------------------------------- composite app (as R26 builds it)
+// R26 links a container and its micro apps through project.manifest files (container: every micro app; feature
+// apps: ResourcesMA + CommonsMA; CommonsMA: ResourcesMA) plus RES / BCES variants of the container manifest for
+// the retail and business builds. At run time the composite app starts with _kony.mvc.initCompositeApp(true) in
+// preappinit — in the container and in every feature app (so each can also run on its own).
+export const COMPOSITE_INIT = "_kony.mvc.initCompositeApp(true);";
+
+// put COMPOSITE_INIT first in an app-event function: kind "json" (action definition — the source Visualizer
+// regenerates the JS from), "js" (a function AS_x(eventobject) { … } file or the appEvents.js define({...}))
+export function addCompositeInit(text, id, kind) {
+  if (text.includes("initCompositeApp")) return null;
+  if (kind === "json") {
+    const i = text.indexOf(`"${id}"`);
+    const k = i < 0 ? -1 : text.indexOf('"codeSnippet"', i);
+    if (k < 0) return null;
+    const q = text.indexOf('"', text.indexOf(":", k) + 1);
+    return text.slice(0, q + 1) + COMPOSITE_INIT + "\\n" + text.slice(q + 1);
+  }
+  const m = new RegExp(`function\\s+${id}\\s*\\([^)]*\\)\\s*\\{[^\\n]*\\n`).exec(text);
+  if (!m) return null;
+  const at = m.index + m[0].length;
+  const indent = (text.slice(at).match(/^[ \t]*/) || [""])[0] || "    ";
+  return `${text.slice(0, at)}${indent}${COMPOSITE_INIT}\n${text.slice(at)}`;
+}
+
+// rewrite cross-app references inside the code snippets of an action definition (.json)
+function rewriteActionJson(raw, ctx) {
+  let j;
+  try { j = JSON.parse(raw.replace(/^\uFEFF/, "")); } catch { return null; }
+  const log = [], dataUses = [];
+  const unresolved = { getModule: 0, navigation: 0 };
+  let changed = false;
+  const walk = (o) => {
+    if (Array.isArray(o)) { o.forEach(walk); return; }
+    if (!o || typeof o !== "object") return;
+    for (const [k, v] of Object.entries(o)) {
+      if (k === "codeSnippet" && typeof v === "string" && /getModule\(|navigateTo\(|kony\.mvc\.Navigation\(|require\(/.test(v)) {
+        const r = rewriteJs(v, ctx);
+        if (r.text !== v) { o[k] = r.text; changed = true; }
+        log.push(...r.log); dataUses.push(...r.dataUses); unresolved.getModule += r.unresolved.getModule; unresolved.navigation += r.unresolved.navigation;
+      } else if (v && typeof v === "object") walk(v);
+    }
+  };
+  walk(j);
+  return { text: changed ? JSON.stringify(j, null, 4) : raw, log, dataUses, unresolved };
+}
+
+const NAV_MODEL = '{ \n    "Application": {},\n    "Forms" : {},\n    "UIModules" : {}\n}\n';
+const NAV_CONTROLLER = "define({\n    //Add your navigation controller code here.\n});\n";
+
+// R26's retail / business container manifests list a subset of the micro apps; micro apps R26 does not have go in both
+function variantMembers(file, apps) {
+  return apps.filter((a) => !R26_MAP.apps[a] || R26_MAP.apps[a].listedIn.includes(file));
+}
+
+// in-memory (or on-disk, via read) check that every project is wired the way R26 wires it
+export async function checkComposite(projects, roles, read) {
+  const { container, commons, resources } = roles;
+  const rows = [];
+  for (const p of projects) {
+    const checks = [];
+    const ok = (name, pass, detail = "") => checks.push({ name, ok: !!pass, detail });
+    const mf = await read(`${p}/project.manifest`);
+    let deps = [];
+    try { deps = mf ? (JSON.parse(mf).dependencies || []).map((d) => d.name) : []; } catch { /* unreadable */ }
+    if (p === resources) ok("no project.manifest (as in R26)", !mf);
+    else {
+      ok("project.manifest", mf, mf ? `${deps.length} dependencies` : "missing");
+      const want = p === container ? projects.filter((x) => x !== container) : p === commons ? [resources] : [resources, commons];
+      const miss = want.filter((x) => !deps.includes(x));
+      ok(p === container ? "lists every micro app" : p === commons ? "depends on ResourcesMA" : "depends on CommonsMA + ResourcesMA", !miss.length, miss.length ? `missing ${miss.join(", ")}` : "");
+    }
+    if (p === container) {
+      for (const v of ["RESproject.manifest", "BCESproject.manifest"]) ok(v, await read(`${p}/${v}`));
+    }
+    const props = await read(`${p}/projectProperties.json`);
+    ok("projectProperties.json", props);
+    if (props) {
+      let pj = {};
+      try { pj = JSON.parse(props.replace(/^\uFEFF/, "")); } catch { /* unreadable */ }
+      const evs = [];
+      for (const d of roles.channelDirs) for (const [k, id] of Object.entries((pj.ide_appEvents || {})[d] || {})) if (typeof id === "string" && /^AS_AppEvents_\w+$/.test(id)) evs.push([d, k, id]);
+      if (p === commons || p === resources) ok("no app events (as in R26)", !evs.length, evs.length ? `${evs.length} found` : "");
+      else {
+        const missing = [];
+        let init = false;
+        for (const [d, k, id] of evs) {
+          const found = await read(`${p}/studioactions/${d}/${id}.json`);
+          if (!found) missing.push(`${d}.${k}=${id}`);
+          else if (k === "preappinit" && found.includes("initCompositeApp")) init = true;
+        }
+        ok("app events present", evs.length && !missing.length, missing.length ? `missing ${missing.join(", ")}` : evs.length ? `${evs.length} events` : "none");
+        ok("preappinit starts the composite app", init, evs.some((e) => e[1] === "preappinit") ? "" : "no preappinit");
+      }
+    }
+    ok("navigation framework files", await read(`${p}/navigation/${roles.channelDirs[0]}/navigationModel.json`));
+    rows.push({ project: p, role: p === container ? "container" : p === commons || p === resources ? "shared" : "feature", checks, ok: checks.every((c) => c.ok) });
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------- R26 layout (form by form, R26 module names)
+// Decisions agreed with the user (2026-10-14):
+//   forms       each monolith form goes to the micro app + module R26 keeps it in (R26's module name)
+//   KBZ-only    forms R26 does not have go with their siblings (the module's main part); a module with no form in
+//               R26 keeps its own name inside the closest existing micro app (a new one only if nothing is close)
+//   split       a module R26 spreads over several modules gets its business / presentation code in every part
+//   two-in-one  when two monolith modules land in the same R26 module, the bigger takes the R26 name and the
+//               smaller keeps its own name next to it
+//   business    business controllers stay inside the (renamed) module — no *Manager restructuring
+// A "part" = { module (monolith), app, name (module name in the micro app), forms: [names] }.
+export async function r26Layout(monoFiles, ma, channel) {
+  const C = CHANNELS[channel];
+  const jac = (a, b) => { let i = 0; for (const x of a) if (b.has(x)) i++; const u = a.size + b.size - i; return u ? i / u : 0; };
+  // micro apps that are part of the R26 composite app (listed and not hidden in the container manifest)
+  const listed = new Set(), hidden = new Set();
+  for (const mf of Object.values(ma.manifests)) for (const f of Object.values(mf)) {
+    try { for (const d of JSON.parse((await f.text()).replace(/^\uFEFF/, "")).dependencies || []) { listed.add(d.name); if (d.isHidden || d.excludeFromBuild) hidden.add(d.name); } } catch { /* unreadable */ }
+  }
+  const usable = (a) => listed.has(a) && !hidden.has(a) && !/^Resources\w*MA$/.test(a);
+  // R26 forms of this channel: name -> [{app, module, ids}]
+  const r26 = new Map();
+  for (const a of ma.apps.values()) {
+    if (!usable(a.name)) continue;
+    for (const [k, w] of a.scan.forms) {
+      const s = k.split("/"), ch = s[0];
+      if (!C.r26.includes(ch)) continue;
+      const name = s[s.length - 1].replace(/\.sm$/i, ""), module = s.slice(1, -1).join("/");
+      if (!r26.has(name)) r26.set(name, []);
+      r26.get(name).push({ app: a.name, module, ids: new Set(w.keys()) });
+    }
+  }
+  // monolith forms of this channel with their widget ids
+  const forms = new Map(); // "M/frm" -> {module, name, ids}
+  for (const { rel } of monoFiles) {
+    const s = rel.split("/");
+    if (s[0] !== "forms" || !C.mono.includes(s[1])) continue;
+    const i = s.findIndex((x) => /\.sm$/i.test(x));
+    if (i < 3 || s.length !== i + 2) continue;
+    const module = s.slice(2, i).join("/"), name = s[i].replace(/\.sm$/i, ""), k = `${module}/${name}`;
+    if (!forms.has(k)) forms.set(k, { module, name, ids: new Set() });
+    forms.get(k).ids.add(s[i + 1].replace(/\.json$/i, ""));
+  }
+  // owner of each monolith form in R26 (unique name, else the copy sharing most widgets)
+  const owner = new Map(), ties = [];
+  for (const [k, f] of forms) {
+    const c = r26.get(f.name);
+    if (!c) continue;
+    const sc = c.map((x) => ({ ...x, score: jac(f.ids, x.ids) })).sort((a, b) => b.score - a.score || b.ids.size - a.ids.size);
+    owner.set(k, sc[0]);
+    if (sc.length > 1 && sc[0].score === sc[1].score && sc[0].ids.size === sc[1].ids.size) ties.push(k);
+  }
+  // identical copies: prefer the micro app most of the module's other forms go to
+  const byModule = new Map();
+  for (const [k, f] of forms) { if (!byModule.has(f.module)) byModule.set(f.module, []); byModule.get(f.module).push(k); }
+  for (const k of ties) {
+    const m = forms.get(k).module, votes = {};
+    for (const o of byModule.get(m)) if (owner.has(o) && !ties.includes(o)) votes[owner.get(o).app] = (votes[owner.get(o).app] || 0) + 1;
+    const c = r26.get(forms.get(k).name).filter((x) => x.ids.size === owner.get(k).ids.size).sort((a, b) => (votes[b.app] || 0) - (votes[a.app] || 0));
+    owner.set(k, c[0]);
+  }
+  // parts
+  const parts = new Map(); // "app|name" -> part
+  const part = (module, app, name, r26mod) => {
+    const key = `${module}|${app}|${name}`;
+    if (!parts.has(key)) parts.set(key, { module, app, name, r26: r26mod, forms: [], matched: 0 });
+    return parts.get(key);
+  };
+  const formPart = new Map(), primary = new Map(), notes = [];
+  for (const [m, keys] of byModule) {
+    const matched = keys.filter((k) => owner.has(k));
+    for (const k of matched) { const o = owner.get(k); const pt = part(m, o.app, o.module, true); pt.matched++; formPart.set(k, pt); }
+    // main part: the one holding most of the module's forms; KBZ-only forms join it
+    const count = {};
+    for (const k of matched) { const pk = `${owner.get(k).app}|${owner.get(k).module}`; count[pk] = (count[pk] || 0) + 1; }
+    const best = Object.entries(count).sort((a, b) => b[1] - a[1])[0];
+    let main;
+    if (best) { const [app, name] = best[0].split("|"); main = part(m, app, name, true); }
+    else {
+      const near = nearestApp(m, channel);
+      const app = near && ma.apps.has(near) && usable(near) ? near : `${m.replace(/(UI)?Module(New)?$/i, "").replace(/New$/, "").replace(/[^A-Za-z0-9]/g, "") || m}MA`;
+      main = part(m, app, m, false);
+      notes.push({ module: m, message: near && app === near ? `no form of ${m} is in R26 — kept as ${m} in the closest micro app, ${app}` : `no form of ${m} is in R26 and no micro app is close — new micro app ${app}` });
+    }
+    primary.set(m, main);
+    for (const k of keys) if (!formPart.has(k)) formPart.set(k, main);
+  }
+  for (const [k, p] of formPart) p.forms.push(forms.get(k).name);
+  // two monolith modules in one R26 module: the bigger keeps the R26 name, the smaller its own
+  const byTarget = new Map();
+  for (const p of parts.values()) { const t = `${p.app}|${p.name}`; if (!byTarget.has(t)) byTarget.set(t, []); byTarget.get(t).push(p); }
+  for (const list of byTarget.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => b.matched - a.matched || b.forms.length - a.forms.length); // the module R26 actually keeps there wins
+    for (const p of list.slice(1)) { notes.push({ module: p.module, message: `${p.module}'s ${p.forms.join(", ")} would share ${p.app}/${p.name} with ${list[0].module} — kept as module ${p.module} next to it` }); p.name = p.module; p.r26 = false; }
+  }
+  return {
+    channel,
+    parts: [...parts.values()].filter((p) => p.forms.length),
+    formPart: Object.fromEntries([...formPart].map(([k, p]) => [k, `${p.app}|${p.name}`])),
+    primary: Object.fromEntries([...primary].map(([m, p]) => [m, `${p.app}|${p.name}`])),
+    notes, ties: ties.length,
+  };
+}
+
+// lookups over a layout (as produced by r26Layout)
+function layoutIndex(layout) {
+  if (!layout) return null;
+  const byKey = new Map(layout.parts.map((p) => [`${p.app}|${p.name}`, p]));
+  const byModule = new Map();
+  for (const p of layout.parts) { if (!byModule.has(p.module)) byModule.set(p.module, []); byModule.get(p.module).push(p); }
+  for (const l of byModule.values()) l.sort((a, b) => b.forms.length - a.forms.length);
+  return {
+    has: (m) => byModule.has(m),
+    parts: (m) => byModule.get(m) || [],
+    primary: (m) => byKey.get(layout.primary[m]) || (byModule.get(m) || [])[0],
+    formPart: (m, f) => byKey.get(layout.formPart[`${m}/${f}`]) || null,
+    // the part a monolith module resolves to from code in `app` (inside folder `self` of module `selfKbz`)
+    resolve(m, app, shared, self) {
+      const all = byModule.get(m) || [];
+      if (!shared) {
+        if (self && self.kbz === m) { const own = all.find((p) => p.app === app && p.name === self.name); if (own) return own; }
+        const here = all.find((p) => p.app === app);
+        if (here) return here;
+      }
+      return this.primary(m);
+    },
+  };
+}
+
 // ---------------------------------------------------------------- conversion
 const JS_REWRITE = new Set(["formController", "templateController", "mvc", "widget", "folder:modules", "action", "appAction"]);
 
 export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
   const { container, commons, resources } = plan;
   const moduleApp = new Map(plan.rows.map((r) => [r.module, r.target.trim()]));
-  const featureApps = [...new Set(plan.rows.map((r) => r.target.trim()))].filter((a) => a !== commons && a !== resources && a !== container).sort();
+  const formTargets = plan.formTargets || {}; // "Module/frmX" -> micro app, for modules split across micro apps
+  const appOfForm = (module, form) => (L && L.formPart(module, form) ? L.formPart(module, form).app : null) || formTargets[`${module}/${form}`] || moduleApp.get(module); // L: see below
+  const moduleApps = new Map(); // module -> every micro app holding some of it (primary first)
+  for (const [m, a] of moduleApp) moduleApps.set(m, new Set([a]));
+  for (const [k, a] of Object.entries(formTargets)) { const m = k.split("/")[0]; if (!moduleApps.has(m)) moduleApps.set(m, new Set()); moduleApps.get(m).add(a); }
+  const L = layoutIndex(plan.layout);
+  if (L) for (const p of plan.layout.parts) { // the layout decides where module code and forms go
+    moduleApp.set(p.module, L.primary(p.module).app);
+    if (!moduleApps.has(p.module)) moduleApps.set(p.module, new Set());
+    moduleApps.set(p.module, new Set(L.parts(p.module).map((x) => x.app)));
+  }
+  const featureApps = [...new Set([...plan.rows.filter((r) => !L || !L.has(r.module)).map((r) => r.target.trim()), ...Object.values(plan.formTargets || {}), ...(plan.layout ? plan.layout.parts.map((p) => p.app) : [])])].filter((a) => a !== commons && a !== resources && a !== container).sort();
   const sharedApps = new Set([commons, resources, container]);
   const files = monoFiles.map((x) => ({ ...x, c: classify(x.rel) }));
   const warnings = [];
@@ -283,7 +566,7 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
   const place = new Map(widgetNs.map((n) => [n, resources]));
   const tplApps = new Map([...templateNames].map((t) => [t, new Set()]));
   const appsOfUnit = (u) => {
-    if (u.startsWith("form:")) return [moduleApp.get(u.slice(5)) || container];
+    if (u.startsWith("form:")) return moduleApps.has(u.slice(5)) ? [...moduleApps.get(u.slice(5))] : [container];
     if (u.startsWith("widget:")) return [place.get(u.slice(7))];
     if (u.startsWith("template:")) return [...(tplApps.get(u.slice(9)) || [])];
     return [];
@@ -315,17 +598,29 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
 
   // --- form name -> apps (for navigation rewrites)
   const formIndex = new Map();
-  for (const x of files) if (x.c.cat === "form") { const a = moduleApp.get(x.c.module) || container; if (!formIndex.has(x.c.form)) formIndex.set(x.c.form, new Set()); formIndex.get(x.c.form).add(a); }
+  for (const x of files) if (x.c.cat === "form") { const a = appOfForm(x.c.module, x.c.form) || container; if (!formIndex.has(x.c.form)) formIndex.set(x.c.form, new Set()); formIndex.get(x.c.form).add(a); }
 
   // --- destinations
   const out = []; // {path, f} | {path, text}
-  const add = (app, rel, x) => out.push({ path: `${app}/${rel}`, f: x.f, src: x.rel, app, c: x.c });
+  const add = (app, rel, x, extra) => out.push({ path: `${app}/${rel}`, f: x.f, src: x.rel, app, c: x.c, ...extra });
+  // R26 layout: folder renamed to the part's module name (forms/<ch>/<M>/…, controllers/<ch>/<M>/…, mvcextensions/<M>/…)
+  const renamed = (rel, m, name) => (name === m ? rel : rel.replace(new RegExp(`^(forms/[^/]+/|controllers/[^/]+/|mvcextensions/)${m.replace(/[$.]/g, "\\$&")}/`), `$1${name}/`));
   const placements = { widgets: {}, templates: {}, actions: { unreferenced: 0 } };
   const orphanCtrl = new Set(); // controllers outside any module that belong to no template
   for (const x of files) {
     const c = x.c;
     switch (c.cat) {
-      case "form": case "formController": case "mvc": add(moduleApp.get(c.module) || container, x.rel, x); break;
+      case "form": case "formController": {
+        const frm = c.cat === "form" ? c.form : x.rel.split("/").slice(-2)[0].replace(/Controller$/, "");
+        const pt = L && L.formPart(c.module, frm);
+        if (pt) add(pt.app, renamed(x.rel, c.module, pt.name), x, { self: { kbz: c.module, name: pt.name } });
+        else add(appOfForm(c.module, frm) || container, x.rel, x);
+        break;
+      }
+      case "mvc":
+        if (L && L.has(c.module)) for (const pt of L.parts(c.module)) add(pt.app, renamed(x.rel, c.module, pt.name), x, { self: { kbz: c.module, name: pt.name }, part: pt });
+        else for (const a of moduleApps.get(c.module) || [container]) add(a, x.rel, x); // a split module's code goes with each part
+        break;
       case "widget": add(place.get(c.ns), x.rel, x); break;
       case "template": for (const a of tplApps.get(c.template) || [resources]) add(a, x.rel, x); break;
       case "templateController": {
@@ -358,14 +653,19 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
 
   // --- reference rewrites in JS
   onProgress({ step: "Rewriting references", done: 0, total: 0 });
-  const js = out.filter((o) => o.f && /\.js$/i.test(o.path) && (JS_REWRITE.has(o.c.cat) || (o.c.cat === "folder" && o.c.top === "modules")));
+  const js = out.filter((o) => o.f && ((/\.js$/i.test(o.path) && (JS_REWRITE.has(o.c.cat) || (o.c.cat === "folder" && o.c.top === "modules")))
+    || (/\.json$/i.test(o.path) && o.c.cat === "action")));
   const unresolved = { getModule: 0, navigation: 0 };
   let navPatched = false, dataUseFiles = 0;
   for (let i = 0; i < js.length; i++) {
     const o = js[i];
     const raw = await o.f.text();
     if (!/getModule\(|define\(|navigateTo\(|kony\.mvc\.Navigation\(|require\(/.test(raw)) continue;
-    let { text, log, unresolved: u, dataUses } = rewriteJs(raw, { app: o.app, shared: sharedApps.has(o.app), moduleApp, formIndex, path: o.path });
+    const ctx = { app: o.app, shared: sharedApps.has(o.app), moduleApp, moduleApps, appOfForm, formIndex, path: o.path, layout: L, self: o.self };
+    const res = /\.json$/i.test(o.path) ? rewriteActionJson(raw, ctx) : rewriteJs(raw, ctx);
+    if (!res) continue;
+    let { text } = res;
+    const { log, unresolved: u, dataUses } = res;
     unresolved.getModule += u.getModule; unresolved.navigation += u.navigation;
     if (dataUses.length) {
       dataUseFiles++;
@@ -382,12 +682,93 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
   }
   if (!navPatched && files.some((x) => /mvcextensions\/NavigationManager\//.test(x.rel))) warnings.push({ message: "NavigationManager was not adapted — check the report" });
 
+  // --- R26 layout: ModuleConfig.json files. Every "Module/frmX" path (Controller, FormName, extensions — at any
+  //     depth, e.g. KBZ's "EUROPE" variant block) is renamed to the module the form now lives in, as R26 writes them
+  //     ("AuthUIModule/frmLogin"); a module's own forms are listed only in the part that holds them, forms it
+  //     registered from other modules stay registered in its main part (as in the monolith)
+  let configs = 0, crossKept = 0;
+  if (L) {
+    const formPath = (v) => {
+      if (typeof v !== "string") return v;
+      const m = v.match(/^([\w$]+)\/((?:user)?frm[\w$]*)$/);
+      if (!m || !L.has(m[1])) return v;
+      const pt = L.formPart(m[1], m[2].replace(/^user/, "").replace(/Controller(Actions)?$/, "")) || L.primary(m[1]);
+      return `${pt.name}/${m[2]}`;
+    };
+    const ownPath = (v, m, name) => (typeof v === "string" && v.startsWith(`${m}/`) && !/^[\w$]+\/(user)?frm/.test(v) ? `${name}/${v.slice(m.length + 1)}` : v);
+    const deep = (o, f) => (Array.isArray(o) ? o.map((x) => deep(x, f)) : o && typeof o === "object" ? Object.fromEntries(Object.entries(o).map(([k, v]) => [k, deep(v, f)])) : f(o));
+    // filter every "Forms": { <channel>: { frm: entry } } block for one part
+    const filterForms = (o, pt) => {
+      if (Array.isArray(o)) return o.map((x) => filterForms(x, pt));
+      if (!o || typeof o !== "object") return o;
+      const next = {};
+      for (const [k, v] of Object.entries(o)) {
+        if (k === "Forms" && v && typeof v === "object" && pt) {
+          const fsOut = {};
+          for (const [ch, list] of Object.entries(v)) {
+            for (const [frm, e] of Object.entries(list || {})) {
+              const fm = e && typeof e.FormName === "string" ? e.FormName.split("/")[0] : pt.module;
+              const own = fm === pt.module;
+              const keep = own ? pt.forms.includes(frm) : L.primary(pt.module) === pt;
+              if (!keep) continue;
+              if (!own) crossKept++;
+              (fsOut[ch] ||= {})[frm] = e;
+            }
+          }
+          next[k] = fsOut;
+        } else next[k] = filterForms(v, pt);
+      }
+      return next;
+    };
+    for (const o of out) {
+      if (!/^[^/]+\/mvcextensions\/[^/]+\/Config\/ModuleConfig\.json$/.test(o.path)) continue;
+      const raw = o.text != null ? o.text : await o.f.text();
+      let j;
+      try { j = JSON.parse(raw.replace(/^\uFEFF/, "")); } catch { continue; }
+      const pt = o.part || null;
+      if (pt) j = filterForms(j, pt);
+      j = deep(j, (v) => formPath(pt ? ownPath(v, pt.module, pt.name) : v));
+      if (pt && "ModuleName" in j) j.ModuleName = pt.name;
+      const text = JSON.stringify(j, null, 4);
+      if (text !== raw) { o.text = text; delete o.f; configs++; }
+    }
+  }
+
+
+  // --- composite runtime (R26): preappinit starts with _kony.mvc.initCompositeApp(true); every feature app carries
+  //     the app events its projectProperties.json points to
+  let kbzProps = {};
+  const propsFile = files.find((x) => x.rel === "projectProperties.json");
+  if (propsFile) {
+    try { kbzProps = JSON.parse((await propsFile.f.text()).replace(/^\uFEFF/, "")); }
+    catch (e) { warnings.push({ path: "projectProperties.json", message: `the monolith's projectProperties.json could not be read (${e.message}) \u2014 its settings and app events are not carried over` }); }
+  }
+  // app events are projectProperties.ide_appEvents.<channel dir>.<event> = action id (studioactions/<dir>/<id>.json)
+  const evDirs = CHANNELS[plan.channel].mono;
+  const appEvents = kbzProps.ide_appEvents || {};
+  const eventIds = new Set(evDirs.flatMap((d) => Object.values(appEvents[d] || {}).filter((v) => typeof v === "string" && /^AS_AppEvents_\w+$/.test(v))));
+  const preInits = new Map(evDirs.map((d) => [d, (appEvents[d] || {}).preappinit]).filter(([, v]) => v));
+  const evOut = out.filter((o) => o.app === container && /^studioactions\/[^/]+\/(AS_AppEvents_\w+\.(js|json)|appEvents\.js)$/.test(o.src || "")
+    && evDirs.includes(o.src.split("/")[1]) && (/appEvents\.js$/.test(o.src) || eventIds.has(o.src.split("/").pop().replace(/\.(js|json)$/, ""))));
+  let initAdded = 0;
+  for (const o of evOut) {
+    const pre = preInits.get(o.src.split("/")[1]);
+    if (!pre) continue;
+    const raw = o.text != null ? o.text : await o.f.text();
+    let text = raw;
+    if (o.src.endsWith(`${pre}.json`)) text = addCompositeInit(raw, pre, "json") || raw;
+    else if (o.src.endsWith(`${pre}.js`) || o.src.endsWith("appEvents.js")) text = addCompositeInit(raw, pre, "js") || raw;
+    if (text !== raw) { o.text = text; delete o.f; initAdded++; rewrites.push({ path: o.path, line: "", rule: "composite app start (R26)", before: "preappinit", after: COMPOSITE_INIT }); }
+  }
+  for (const [d, pre] of preInits) if (!evOut.some((o) => o.src.endsWith(`${d}/${pre}.json`) && o.text && o.text.includes("initCompositeApp"))) warnings.push({ message: `preappinit (${d}: ${pre}) not found in studioactions — add ${COMPOSITE_INIT} to it by hand` });
+  for (const a of featureApps) for (const o of evOut) out.push({ path: `${a}/${o.src}`, ...(o.text != null ? { text: o.text } : { f: o.f }), src: o.src, app: a, c: o.c, generated: true });
+  if (!preInits.size) warnings.push({ message: "the monolith has no preappinit event — the composite app will not call initCompositeApp; add one to the container" });
+
   // --- generated project files (R26 structure)
   const tplApp = (name) => ma.apps.get(name) || ma.apps.get(featureApps.find((a) => ma.apps.has(a))) || [...ma.apps.values()].find((a) => ma.manifests[a.name] && a.name !== container);
   const relIn = (app, f) => (f.webkitRelativePath || f.name).replace(/\\/g, "/").slice(app.root.length + 1);
   const tplFile = (app, rel) => app && app.files.find((f) => relIn(app, f) === rel);
   const monoRoot = (name) => files.find((x) => x.rel === name);
-  const kbzProps = monoRoot("projectProperties.json") ? JSON.parse((await monoRoot("projectProperties.json").f.text()).replace(/^﻿/, "")) : {};
   const containerTpl = ma.apps.get(container) || tplApp(container);
   const appId = kbzProps.appidkey || "OnlineBanking";
   // Settings policy: the monolith's value wins for every setting it has (so no reference-project secrets, cloud ids
@@ -398,6 +779,17 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
   const parseProps = (t) => { const m = new Map(); for (const line of t.split(/\r?\n/)) { const x = line.match(/^\s*([^#=\s][^=]*?)\s*=(.*)$/); if (x) m.set(x[1], x[2]); } return m; };
   const kbzHead = monoRoot("HeadlessBuild.properties") ? parseProps(await monoRoot("HeadlessBuild.properties").f.text()) : new Map();
   const projects = [container, ...featureApps, commons, resources];
+  // start-up form (a form kuid): R26 keeps it in the container and in the one project holding that form; every other
+  // micro app has its own start-up form or none — a key pointing at a form outside the project is cleared
+  const STARTUP = ["startupformkey", "desktopstartupformkey", "tabletstartupformkey"];
+  const wantedKuid = new Set(STARTUP.map((k) => kbzProps[k]).filter(Boolean));
+  const startupApp = new Map();
+  if (wantedKuid.size) for (const x of files) if (x.c.cat === "form" && x.rel.endsWith(`/${x.c.form}.sm/${x.c.form}.json`)) {
+    const m = (await x.f.text()).match(/"kuid"\s*:\s*"(\w+)"/);
+    if (m && wantedKuid.has(m[1])) startupApp.set(m[1], appOfForm(x.c.module, x.c.form) || container);
+  }
+  const channelKey = plan.channel === "web" ? "desktopstartupformkey" : "startupformkey";
+  if (kbzProps[channelKey] && !startupApp.has(kbzProps[channelKey])) warnings.push({ message: `start-up form ${channelKey} (${kbzProps[channelKey]}) is not one of this channel's forms — set the container's start-up form in Visualizer` });
   const deps = {};
   for (const p of projects) {
     const tpl = p === container ? containerTpl : tplApp(p);
@@ -413,6 +805,9 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
         props[k] = v;
       }
       if (p !== container) { props.appnamekey = p; if (props.appidkey && props.appidkey !== p) props.appidkey = appId; }
+      if (p !== container) for (const k of STARTUP) if (props[k]) props[k] = startupApp.get(props[k]) === p ? props[k] : "";
+      if (p === commons || p === resources) delete props.ide_appEvents;
+      else if (kbzProps.ide_appEvents) props.ide_appEvents = kbzProps.ide_appEvents;
       out.push({ path: `${p}/projectProperties.json`, text: JSON.stringify(props, null, 4), app: p, generated: true });
     } else warnings.push({ message: `No R26 template project for ${p} — projectProperties.json not generated` });
     const hb = tplFile(tpl, "HeadlessBuild.properties");
@@ -429,9 +824,13 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
     }
     if (tpl) for (const f of tpl.files) {
       const r = relIn(tpl, f);
-      if (r.startsWith("navigation/")) out.push({ path: `${p}/${r}`, f, app: p, generated: true });
       if (p !== container && ["splashscreenproperties.json", "nativeapi.json", ".gitignore", ".meta/lockMeta.json"].includes(r)) out.push({ path: `${p}/${r}`, f, app: p, generated: true });
       if (p === container && r === ".meta/lockMeta.json") out.push({ path: `${p}/${r}`, f, app: p, generated: true });
+    }
+    // navigation framework (R26): empty model + controller per channel — R26's own navigation rules are not copied
+    for (const ch of ["desktop", "mobile", "tablet"]) {
+      out.push({ path: `${p}/navigation/${ch}/navigationModel.json`, text: NAV_MODEL, app: p, generated: true });
+      out.push({ path: `${p}/navigation/${ch}/navigationController.js`, text: NAV_CONTROLLER, app: p, generated: true });
     }
     // default skins (Visualizer defaults) in every project except ResourcesMA, which gets all of them
     if (p !== resources && tpl) {
@@ -443,17 +842,34 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
     }
     deps[p] = p === container ? projects.filter((x) => x !== container) : p === commons ? [resources] : p === resources ? [] : [commons, resources];
   }
+  const entry = (d) => ({ name: d, ...(d === commons || d === resources ? { useResources: true } : {}), isHidden: false, excludeFromBuild: false });
   for (const p of projects) {
     if (!deps[p].length) continue;
-    const manifest = { dependencies: deps[p].map((d) => ({ name: d, ...(d === commons || d === resources ? { useResources: true } : {}), isHidden: false, excludeFromBuild: false })) };
-    out.push({ path: `${p}/project.manifest`, text: JSON.stringify(manifest, null, 4), app: p, generated: true });
+    out.push({ path: `${p}/project.manifest`, text: JSON.stringify({ dependencies: deps[p].map(entry) }, null, 4), app: p, generated: true });
   }
+  const variants = {};
+  for (const v of ["RESproject.manifest", "BCESproject.manifest"]) {
+    const members = [...variantMembers(v, featureApps), commons, resources];
+    variants[v] = members;
+    out.push({ path: `${container}/${v}`, text: JSON.stringify({ dependencies: members.map(entry) }, null, 4), app: container, generated: true });
+  }
+  const notInR26 = featureApps.filter((a) => !R26_MAP.apps[a]);
+  if (notInR26.length) warnings.push({ message: `${notInR26.length} micro apps R26 does not have are listed in both RESproject.manifest (retail) and BCESproject.manifest (business): ${notInR26.join(", ")} — remove them from the one they do not belong to` });
+
+  // composite check on what is about to be written
+  const byPath = new Map(out.map((o) => [o.path, o]));
+  const channelDirs = CHANNELS[plan.channel].mono;
+  const readOut = async (path) => { const o = byPath.get(path); return o ? (o.text != null ? o.text : await o.f.text()) : null; };
+  const composite = await checkComposite(projects, { container, commons, resources, channelDirs }, readOut);
 
   const summary = {
     channel: plan.channel, container, commons, resources, projects,
     files: out.length, rewrites: rewrites.length, warnings: warnings.length,
     rewriteRules: rewrites.reduce((m, r) => ((m[r.rule] = (m[r.rule] || 0) + 1), m), {}),
     unresolved, navigationManagerAdapted: navPatched, filesWithFormNamesAsData: dataUseFiles,
+    splitModules: Object.fromEntries([...moduleApps].filter(([, a]) => a.size > 1).map(([m, a]) => [m, [...a]])),
+    layout: plan.layout ? { mode: "R26 (form by form, R26 module names)", parts: plan.layout.parts.length, moduleConfigs: configs, crossRegisteredFormsKept: crossKept, renamedModules: plan.layout.parts.filter((p) => p.name !== p.module).length, notes: plan.layout.notes } : null,
+    composite: { initCompositeApp: initAdded > 0, appEventsCopiedTo: featureApps.length, retail: variants["RESproject.manifest"], business: variants["BCESproject.manifest"], allLinked: composite.every((r) => r.ok) },
     widgetsShared: Object.values(placements.widgets).filter((a) => a === resources).length,
     widgetsInFeatureApps: Object.values(placements.widgets).filter((a) => a !== resources).length,
     templatesCopied: Object.values(placements.templates).reduce((n, a) => n + a.length, 0),
@@ -465,9 +881,9 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
   const csv = [["file", "line", "rule", "before", "after"], ...rewrites.map((r) => [r.path, r.line, r.rule, r.before, r.after]), ...warnings.map((w) => [w.path || "", w.line || "", "WARNING", w.message, ""])]
     .map((row) => row.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
   out.push({ path: "conversion-report.csv", text: csv, generated: true });
-  out.push({ path: "conversion-summary.json", text: JSON.stringify({ summary, plan: plan.rows.map((r) => ({ module: r.module, target: r.target, suggested: r.suggested, reason: r.reason })), placements }, null, 2), generated: true });
+  out.push({ path: "conversion-summary.json", text: JSON.stringify({ summary, plan: plan.rows.map((r) => ({ module: r.module, target: r.target, suggested: r.suggested, reason: r.reason })), formTargets, layout: plan.layout || null, placements, composite }, null, 2), generated: true });
   onProgress({ step: "done", done: 1, total: 1 });
-  return { out, rewrites, warnings, summary, placements };
+  return { out, rewrites, warnings, summary, placements, composite, roles: { container, commons, resources, channelDirs }, projects };
 }
 
 // ---------------------------------------------------------------- writing into a picked folder (File System Access API)

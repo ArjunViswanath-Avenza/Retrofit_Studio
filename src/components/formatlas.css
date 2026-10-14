@@ -1,0 +1,59 @@
+/* ---- Form atlas: every form flying from its monolith module to its micro app ---- */
+:root{--fa-same:#3f8f68;--fa-moved:#e6a323;--fa-kbz:#5b7fb8;--fa-channel:#b9bec5}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--fa-same:#4caf7d;--fa-kbz:#7d9bd0;--fa-channel:#555b63}}
+@keyframes faLand{0%{box-shadow:0 0 0 0 rgba(242,106,33,.0)}35%{box-shadow:0 0 0 5px rgba(242,106,33,.35)}100%{box-shadow:0 0 0 0 rgba(242,106,33,0)}}
+@keyframes faHot{0%,100%{transform:var(--t) scale(1.6)}50%{transform:var(--t) scale(2)}}
+@keyframes faRow{from{opacity:0;transform:translateX(-6px)}to{opacity:1;transform:none}}
+@keyframes faArrow{0%{background-position:0 0}100%{background-position:28px 0}}
+
+.fa-top{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;justify-content:space-between;margin:2px 0 10px}
+.fa-modes{display:flex;align-items:center;gap:10px}
+.fa-modes>button:not(.btn){border:1.5px solid var(--line);background:var(--panel);color:var(--muted);border-radius:22px;padding:8px 16px;font-weight:700;font-size:13px;cursor:pointer;transition:.2s}
+.fa-modes>button.on{border-color:var(--accent);color:#fff;background:var(--accent);box-shadow:0 6px 18px rgba(242,106,33,.25)}
+.fa-arrow{width:46px;height:3px;border-radius:3px;position:relative;background:repeating-linear-gradient(90deg,var(--accent) 0 8px,transparent 8px 14px);animation:faArrow .9s linear infinite}
+.fa-arrow i{position:absolute;right:-4px;top:-5px;border:6.5px solid transparent;border-left-color:var(--accent)}
+.fa-replay{margin-left:6px}
+.fa-legend{display:flex;flex-wrap:wrap;gap:6px}
+.fa-leg{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:4px 10px;cursor:pointer;transition:.18s;background:var(--panel)}
+.fa-leg b{color:var(--ink)}
+.fa-leg.on{border-color:var(--accent)}
+.fa-leg.off{opacity:.45}
+.fa-sw{width:10px;height:10px;border-radius:3px;display:inline-block}
+.fa-select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font-size:12.5px}
+
+.fa-stage{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:16px;margin-top:4px;padding:0;overflow:hidden;transition:height .9s cubic-bezier(.65,0,.35,1);
+  background-image:radial-gradient(circle at 1px 1px,rgba(127,127,127,.18) 1px,transparent 0);background-size:18px 18px}
+.fa-box{position:absolute;margin:10px;border-radius:12px;border:1px solid var(--line);background:color-mix(in srgb,var(--panel) 88%,transparent);opacity:0;transform:scale(.97);transition:opacity .5s ease,transform .5s ease;pointer-events:none}
+.fa-box.show{opacity:1;transform:none;transition-delay:var(--d,0ms)}
+.fa-box-module{border-style:dashed}
+.fa-box-r26{border-top:3px solid var(--accent)}
+.fa-box-new{border-top:3px solid #3e5573}
+.fa-box-shared,.fa-box-container{border-top:3px solid #8d939b}
+.fa-box-h{display:flex;flex-direction:column;padding:6px 12px 0;line-height:1.25;overflow:hidden}
+.fa-box-h b{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fa-box-h span{font-size:10.5px;color:var(--muted);white-space:nowrap}
+
+.fa-tile{position:absolute;left:10px;top:10px;width:12px;height:12px;border-radius:3.5px;cursor:pointer;will-change:transform;
+  transition:transform 1.05s cubic-bezier(.65,0,.35,1),opacity .25s,filter .25s;box-shadow:inset 0 0 0 1px rgba(0,0,0,.08)}
+.fa-tile.landed{animation:faLand .7s ease-out var(--land) both}
+.fa-same{background:var(--fa-same)}.fa-moved{background:var(--fa-moved)}.fa-kbz{background:var(--fa-kbz)}.fa-channel{background:var(--fa-channel)}
+.fa-tile.dim{opacity:.13;filter:saturate(.3)}
+.fa-tile:hover,.fa-tile.hot{z-index:3;outline:2px solid var(--ink);outline-offset:1px}
+
+.fa-tip{position:absolute;z-index:6;width:250px;background:var(--brand-bg);color:#fff;border-radius:12px;padding:10px 12px;font-size:12px;line-height:1.45;pointer-events:none;box-shadow:0 12px 30px rgba(0,0,0,.3);animation:vzFade .15s ease}
+.fa-tip-form{font-family:var(--mono);font-weight:700;font-size:12.5px;margin-bottom:4px;word-break:break-all}
+.fa-route{display:flex;flex-wrap:wrap;gap:4px;align-items:baseline;font-family:var(--mono);font-size:11.5px}
+.fa-route i{color:var(--accent);font-style:normal;font-weight:800}
+.fa-tip-st{margin-top:6px;font-weight:700;font-size:11px}
+.fa-t-same{color:#7ee0ab}.fa-t-moved{color:#ffcf6b}.fa-t-kbz{color:#a9c3f0}.fa-t-channel{color:#c9cdd4}
+.fa-tip-r26{color:#b9bcc2;font-size:11px;margin-top:2px}
+
+.fa-list tbody tr{animation:faRow .35s ease both;animation-delay:var(--d);cursor:pointer;transition:background .15s}
+.fa-list tbody tr:hover,.fa-list tbody tr.hot{background:var(--accent-soft)}
+.fa-go{color:var(--accent);font-weight:800}
+.fa-badge{font-size:10.5px;font-weight:700;border-radius:20px;padding:2px 8px;white-space:nowrap;color:#fff}
+.fa-badge.fa-moved,.fa-badge.fa-channel{color:#1b1b1b}
+
+@media (prefers-reduced-motion:reduce){
+  .fa-tile{transition:none}.fa-tile.landed{animation:none}.fa-box{transition:none}.fa-arrow{animation:none}.fa-list tbody tr{animation:none}.fa-stage{transition:none}
+}
