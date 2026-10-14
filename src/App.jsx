@@ -16,7 +16,7 @@ import { resetDecompile } from "./lib/jars";
 import { scanFabricFolder, analyzeFabric, fabricRetrofit } from "./lib/fabric";
 import { VersionNames, VersionNamesPanel } from "./components/VersionNames";
 import { ConverterUpload, ConverterPlan, ConverterRun } from "./components/Converter";
-import { rawFiles, proposePlan } from "./lib/convert";
+import { rawFiles, proposePlan, r26Layout } from "./lib/convert";
 import { inventory, buildPlan, POLICY_DEFAULT } from "./lib/mapplan";
 import { VisualizeUpload, PlanBar, FlowView, AppsView, ModulesView, ReviewView, ModuleDrawer } from "./components/Visualize";
 import { loadNames, saveNames, validate, clean } from "./lib/names";
@@ -201,6 +201,9 @@ export default function App() {
     setCvPlanning({ running: true, step: "Matching modules to micro apps" });
     try {
       const plan = await proposePlan(cvPick[0].scan, cvPick[0].raw.files, cvPick[1], cvChannel);
+      setCvPlanning({ running: true, step: "Placing every form where R26 keeps it" });
+      plan.layout = await r26Layout(cvPick[0].raw.files, cvPick[1], cvChannel);
+      plan.useLayout = true;
       setCvPlan(plan); setCvNav("cv-plan"); setCvRun(null);
       setCvPlanning(null);
     } catch (e) { setCvPlanning({ running: false, step: `Could not build the plan: ${e.message || e}` }); }
