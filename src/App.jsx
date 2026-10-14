@@ -19,6 +19,7 @@ import { ConverterUpload, ConverterPlan, ConverterRun } from "./components/Conve
 import { rawFiles, proposePlan, r26Layout } from "./lib/convert";
 import { inventory, buildPlan, POLICY_DEFAULT } from "./lib/mapplan";
 import { VisualizeUpload, PlanBar, FlowView, AppsView, ModulesView, ReviewView, ModuleDrawer } from "./components/Visualize";
+import { FormAtlas } from "./components/FormAtlas";
 import { loadNames, saveNames, validate, clean } from "./lib/names";
 
 // Version names are user-editable per workspace (components/VersionNames.jsx); L = [base, customised, new release]
@@ -84,6 +85,7 @@ const CV_MENU = [
 
 const VZ_MENU = [
   { id: "vz-flow", ico: "◎", label: "Flow overview", desc: "Modules → micro apps" },
+  { id: "vz-atlas", ico: "✦", label: "Form atlas", desc: "Every form flying to its micro app" },
   { id: "vz-apps", ico: "▦", label: "Micro apps", desc: "What each one will hold" },
   { id: "vz-modules", ico: "☰", label: "Modules & forms", desc: "Every form and its destination" },
   { id: "vz-plan", ico: "✓", label: "Review & agree", desc: "Choices, overrides, sign-off" },
@@ -357,6 +359,7 @@ export default function App() {
             return (
               <>
                 {vzNav === "vz-flow" && <FlowView plan={vzPlan} open={open} header={header} />}
+                {vzNav === "vz-atlas" && <FormAtlas plan={vzPlan} open={open} header={header} />}
                 {vzNav === "vz-apps" && <AppsView plan={vzPlan} open={open} header={header} />}
                 {vzNav === "vz-modules" && <ModulesView plan={vzPlan} sel={vzSel} setSel={setVzSel} setOverride={vzSetOverride} header={header} />}
                 {vzNav === "vz-plan" && <ReviewView plan={vzPlan} inv={vzInv} setPolicy={setVzPolicy} overrides={vzOverrides} setOverride={vzSetOverride} agreed={vzAgreed} agree={vzAgree} projectName={vzPick.name} header={header} />}
