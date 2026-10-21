@@ -2,6 +2,10 @@
 // action on a form traced to the model and back, with the code at each step.
 import { useState, useEffect, useMemo, useRef } from "react";
 import "./blueprint.css";
+import { FormPreview } from "./FormPreview";
+import { FlowJourney } from "./FlowJourney";
+import { triggerText } from "../lib/journey";
+import { widgetInfo } from "../lib/preview";
 import { getClass, analyzeFn, traceEntry, formActions, formArrivals, formWidgets, componentIndex, i18nText, LAYERS, LAYER_LABEL, clsLabel } from "../lib/blueprint";
 
 const nf = (n) => Number(n || 0).toLocaleString("en-US");
@@ -218,7 +222,7 @@ function StepList({ steps }) {
 }
 
 /* ================================================================ shared: code, pickers, step text */
-function Code({ idx, rel, from, to, hl }) {
+export function Code({ idx, rel, from, to, hl }) {
   const [lines, setLines] = useState(null);
   const ref = useRef(null);
   useEffect(() => { let alive = true; idx.read(rel).then((t) => alive && setLines((t || "").split("\n"))); return () => { alive = false; }; }, [idx, rel]);
@@ -244,6 +248,9 @@ function Picker({ title, items, onPick, render }) {
   );
 }
 export function stepText(s, e) {
+  if (e && e.kind === "compEvent") return <>the component raises its event <b className="mono">{e.event}</b> {e.noHandler ? <span className="tag">— this form wires no handler to it</span> : <span className="tag">— the form handles it</span>}</>;
+  if (e && e.kind === "compCall") return <>calls component <b className="mono">{e.comp}</b> method <b className="mono">{s.action}</b></>;
+  if (e && e.kind === "widget" && e.path !== s.path) return <>screen: <b className="mono">{e.path || "(form)"}</b> {s.action}{s.value ? <span className="mono tag"> {s.value}</span> : null}</>;
   switch (s.type) {
     case "self": return <>calls <b className="mono">{s.fn}()</b> in the same class</>;
     case "local": return <>calls local function <b className="mono">{s.name}()</b></>;
@@ -299,7 +306,7 @@ export function BlueprintForm({ idx, formKey, setForm, tab, setTab, openFlow, ca
     return () => { alive = false; };
   }, [idx, formKey, f, cache]);
   if (!f) return <Picker title="Form" items={[...idx.forms.keys()].sort((a, b) => a.split("/").pop().localeCompare(b.split("/").pop()))} onPick={setForm} render={(k) => `${k.split("/").pop()}  ·  ${k.split("/").slice(0, -1).join("/")}`} />;
-  const tabs = [["summary", "Summary"], ["screen", "Screen structure"], ["actions", "User actions"], ["data", "Data in & out"]];
+  const tabs = [["preview", "Preview"], ["summary", "Summary"], ["screen", "Screen structure"], ["actions", "User actions"], ["data", "Data in & out"]];
   return (
     <div className="bp-page">
       <h2 className="page">▤ {f.name}</h2>
@@ -312,6 +319,7 @@ export function BlueprintForm({ idx, formKey, setForm, tab, setTab, openFlow, ca
         {!A ? <p className="note">Reading {f.name}: widgets, controller, actions and the code that opens it…</p> : (
           <>
             {prog && <div className="bp-prog"><span className="tag">Tracing every action to build the summary and data in & out · {prog.done} / {prog.total}</span><div className="progress"><div style={{ width: (prog.done / prog.total) * 100 + "%" }} /></div></div>}
+            {tab === "preview" && <FormPreview idx={idx} f={f} A={A} cache={cache} openFlow={openFlow} />}
             {tab === "summary" && <FormSummary idx={idx} f={f} A={A} sum={sum} openFlow={openFlow} />}
             {tab === "screen" && <ScreenTree idx={idx} f={f} A={A} openFlow={openFlow} />}
             {tab === "actions" && <ActionList A={A} sum={sum} openFlow={openFlow} />}
@@ -325,7 +333,8 @@ export function BlueprintForm({ idx, formKey, setForm, tab, setTab, openFlow, ca
 
 export async function cachedTrace(idx, cache, e, f) {
   const k = "trace:" + f.key + ":" + e.id;
-  if (!cache.has(k)) cache.set(k, await traceEntry(idx, { cls: e.cls, member: e.member, fnNode: e.fnNode, outerScope: e.outerScope, label: e.handlerLabel, form: f.name, module: f.module }));
+  const base = cache.get("form:" + f.key);
+  if (!cache.has(k)) cache.set(k, await traceEntry(idx, { cls: e.cls, member: e.member, fnNode: e.fnNode, outerScope: e.outerScope, label: e.handlerLabel, form: f.name, module: f.module, viewPrefix: e.viewPrefix || null, instances: base && base.instances, formEntries: base && base.entries }));
   return cache.get(k);
 }
 
@@ -341,7 +350,7 @@ function summarize(T) {
       if (e.kind === "service") s.services.set(`${st.svcKind}:${st.obj}.${st.verb}`, st);
       if (e.kind === "nav") s.navs.add(st.form || `(chosen at run time: ${st.formExpr})`);
       if (e.kind === "updateForm" || e.kind === "present") s.updates.push({ form: e.target || st.form || "(form on screen)", keys: st.keys ? st.keys.map((k) => k.key) : [st.dataText] });
-      if (e.kind === "widget") s.widgets.add(st.path || "(form)");
+      if (e.kind === "widget") s.widgets.add(e.path || st.path || "(form)");
       if (e.kind === "infoSet") s.stores.add(st.key || "(run time)");
       if (e.kind === "unresolved") s.unresolved++;
       if (e.missing) s.missing.push(e.missing);
@@ -558,6 +567,9 @@ export function BlueprintFlow({ idx, formKey, setForm, entryId, setEntry, cache,
   const [onlyEffect, setOnlyEffect] = useState(true);
   const [sel, setSel] = useState(null); // { rel, line, from, to }
   const [q, setQ] = useState("");
+  const [dev, setDev] = useState(false);
+  const [info, setInfo] = useState(null);
+  useEffect(() => { let alive = true; if (formKey) widgetInfo(idx, formKey).then((m) => alive && setInfo(m)); else setInfo(new Map()); return () => { alive = false; }; }, [idx, formKey]);
   useEffect(() => {
     if (!f || !formKey) return;
     let alive = true;
@@ -580,11 +592,13 @@ export function BlueprintFlow({ idx, formKey, setForm, entryId, setEntry, cache,
   }, [idx, f, entry && entry.id, cache]);
   if (!f) return <Picker title="Form" items={[...idx.forms.keys()].sort((a, b) => a.split("/").pop().localeCompare(b.split("/").pop()))} onPick={setForm} render={(k) => `${k.split("/").pop()}  ·  ${k.split("/").slice(0, -1).join("/")}`} />;
   const ql = q.toLowerCase();
-  const groups = ["lifecycle", "action", "arrival"].map((g) => [g, entries.filter((e) => e.group === g && (!ql || e.label.toLowerCase().includes(ql)))]);
+  const nice = (e) => (info ? triggerText(e, info) : e.label);
+  const groups = ["action", "lifecycle", "arrival"].map((g) => [g, entries.filter((e) => e.group === g && (!ql || e.label.toLowerCase().includes(ql) || nice(e).toLowerCase().includes(ql)))]);
+  const FRIENDLY = { action: "Things you can do", lifecycle: "When the screen opens or changes", arrival: "Opened from elsewhere in the app" };
   return (
     <div className="bp-page">
       <h2 className="page">⇄ Code flow breakdown · {f.name || external.label}</h2>
-      <div className="crumb">Pick one action. It is followed from the widget through the controller, presentation and business code to the service, and the callbacks back to the widgets.</div>
+      <div className="crumb">Pick something a person can do on this screen and watch, step by step, what the app does — on screen, behind the scenes and with the bank's systems — and where it ends up.</div>
       <div className="bp-flowgrid">
         <div className="bp-list bp-entries">
           <input type="text" placeholder="Find an action…" value={q} onChange={(e) => setQ(e.target.value)} />
@@ -592,18 +606,29 @@ export function BlueprintFlow({ idx, formKey, setForm, entryId, setEntry, cache,
           {external && <div className="bp-item sel"><span className="mono">{external.label}</span><span className="tag">started from a function</span></div>}
           {groups.map(([g, rows]) => rows.length > 0 && (
             <div key={g}>
-              <div className="bp-ghead">{GROUP_LABEL[g].split(" (")[0].split(" — ")[0]} · {rows.length}</div>
+              <div className="bp-ghead">{FRIENDLY[g]} · {rows.length}</div>
               {rows.map((e) => (
-                <div key={e.id} className={"bp-item" + (entry && entry.id === e.id ? " sel" : "") + (e.member ? "" : " dead")} onClick={() => e.member && setEntry(e.id)} title={e.source}>
-                  <span className="mono">{e.label}</span><span className="tag">{e.member ? (e.fnNode && e.fnNode !== e.member.node ? "inline handler" : e.member.name) : "handler not found"}</span>
+                <div key={e.id} className={"bp-item fj-entry" + (entry && entry.id === e.id ? " sel" : "") + (e.member ? "" : " dead")} onClick={() => e.member && setEntry(e.id)} title={`${e.label} · ${e.source}`}>
+                  <span>{nice(e)}</span><span className="tag mono">{e.label}{e.member ? "" : " · handler not found"}</span>
                 </div>
               ))}
             </div>
           ))}
         </div>
         <div className="bp-flowmain">
-          {!entry ? <p className="note">Choose an action on the left.</p> : !T ? <p className="note">Tracing {entry.label}…</p> : (
+          {!entry ? <div className="fj-empty"><div className="fj-emptyico">👈</div><b>Pick something to do on the left</b><span>For example a button to click — you'll see what happens, one step at a time.</span></div> : !T || !info ? <p className="note">Following {entry.label} through the code…</p> : !dev ? (
             <>
+              <FlowJourney entry={entry} T={T} info={info} formName={f.name} onCode={(c) => c && setSel(c)} onDeveloper={() => setDev(true)} />
+              {sel && (
+                <div className="bp-drawer">
+                  <div className="bp-drawerhead"><div className="bp-selhead">{sel.title} — line {sel.line}</div><button className="btn ghost" onClick={() => setSel(null)}>✕ Close</button></div>
+                  <Code idx={idx} rel={sel.rel} from={sel.from} to={sel.to} hl={sel.line} />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="bp-devbar"><button className="btn" onClick={() => { setDev(false); setSel(null); }}>← Back to the story</button><span className="tag">Developer view: every call, callback and condition, with the code.</span></div>
               <FlowStory idx={idx} entry={entry} T={T} />
               <div className="bp-flowbar">
                 <div className="seg" style={{ margin: 0 }}><button className={view === "seq" ? "on" : ""} onClick={() => setView("seq")}>Sequence diagram</button><button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}>Call tree</button></div>
@@ -631,7 +656,7 @@ export function BlueprintFlow({ idx, formKey, setForm, entryId, setEntry, cache,
 }
 
 // the flow in plain words: what happens, in order, for the steps that matter
-function FlowStory({ idx, entry, T }) {
+export function FlowStory({ idx, entry, T }) {
   const lines = [];
   const seen = new Set();
   const walk = (n, depth) => {
@@ -649,7 +674,9 @@ function FlowStory({ idx, entry, T }) {
       } else if (e.kind === "param" && e.child) { lines.push({ d: depth, t: <>↩ calls back <span className="mono">{e.child.clsLabel}.{e.child.name}</span>{s.conds.length ? <span className="tag"> — {s.conds[s.conds.length - 1]}</span> : null}</> }); walk(e.child, depth + 1); }
       else if (e.kind === "nav") lines.push({ d: depth, t: <>⇢ opens form <b className="mono">{s.form || `chosen at run time (${s.formExpr})`}</b></> });
       else if ((e.kind === "updateForm" || e.kind === "present") && e.child) { lines.push({ d: depth, t: <>⇠ sends <span className="mono">{s.keys ? s.keys.map((k) => k.key).join(", ") : "data"}</span> back to <b className="mono">{e.target}</b> → <span className="mono">{e.child.name}</span></> }); walk(e.child, depth + 1); }
-      else if (e.kind === "widget") ws.push(s.path || "(form)");
+      else if (e.kind === "widget") ws.push(e.path || s.path || "(form)");
+      else if (e.kind === "compEvent") { lines.push({ d: depth, t: <>↩ the component raises <span className="mono">{e.event}</span>{e.child ? <> → the form handles it in <span className="mono">{e.child.clsLabel}.{e.child.name}</span></> : " (no handler on this form)"}</> }); walk(e.child, depth + 1); }
+      else if (e.kind === "compCall") { lines.push({ d: depth, t: <>→ calls component <span className="mono">{e.comp}</span></> }); walk(e.child, depth + 1); }
       else if (e.kind === "infoSet") lines.push({ d: depth, t: <>• stores data for later under <span className="mono">{s.key || "(run time)"}</span></> });
     }
     if (ws.length) lines.push({ d: depth, t: <>▣ changes on screen: <span className="mono">{list([...new Set(ws)], 8)}</span></> });
@@ -699,7 +726,9 @@ function seqRows(entry, T, onlyEffect) {
           rows.push({ ...base, from: me, to: 1, label: `↩ ${e.kind === "present" ? "presentUserInterface" : "updateForm"} → ${e.target || "?"}.${e.child ? e.child.name : "?"}  {${s.keys ? s.keys.map((k) => k.key).join(", ") : "data"}}`, kind: "return", missing: e.missing });
           into(e.child); walk(e.child); break;
         case "nav": rows.push({ ...base, from: me, to: 0, label: `opens ${s.form || "(form chosen at run time)"}`, kind: "nav" }); break;
-        case "widget": rows.push({ ...base, from: me, to: 0, label: `${s.path || "(form)"} ${s.action}`, kind: "widget" }); break;
+        case "widget": rows.push({ ...base, from: me, to: 0, label: `${e.path || s.path || "(form)"} ${s.action}`, kind: "widget" }); break;
+        case "compEvent": rows.push({ ...base, from: me, to: 1, label: `↩ raises ${e.event}${e.child ? ` → ${e.child.clsLabel}.${e.child.name}` : " (not handled)"}`, kind: "return" }); into(e.child); walk(e.child); break;
+        case "compCall": rows.push({ ...base, from: me, to: 1, label: `${e.comp}.${s.action}`, kind: "call" }); into(e.child); walk(e.child); break;
         case "infoSet": rows.push({ ...base, from: me, to: me, label: `stores "${s.key || "?"}" (setCustomInfo)`, kind: "self" }); break;
         case "unresolved": rows.push({ ...base, from: me, to: me, label: `? ${s.what} — ${s.why}`, kind: "self", mute: true }); break;
         default: break;

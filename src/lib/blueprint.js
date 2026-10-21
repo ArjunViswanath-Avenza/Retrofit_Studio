@@ -150,6 +150,11 @@ function thisAliases(ast) {
 
 // files of a class, in load order (later files win for a function they also define, as the framework does)
 function classFiles(idx, kind, key) {
+  if (kind === "component") {
+    // userwidgets/<ns>/modules/require/<name>Controller.js (+ <name>ControllerActions.js, loaded after)
+    const name = key.split(".").pop(), dir = `userwidgets/${key}/modules/require/`;
+    return [`${dir}${name}Controller.js`, `${dir}${name}ControllerActions.js`].filter((r) => idx.project.files.has(r));
+  }
   if (kind === "controller") {
     const c = idx.controllers.get(key);
     if (!c) return [];
@@ -179,11 +184,14 @@ function classFiles(idx, kind, key) {
   return M.bcFiles;
 }
 
-export async function getClass(idx, kind, key) {
+// the cache holds the loading promise, so a second caller waits for the whole class instead of getting it half-read
+export function getClass(idx, kind, key) {
   const id = kind + ":" + key;
-  if (idx.classes.has(id)) return idx.classes.get(id);
+  if (!idx.classes.has(id)) idx.classes.set(id, loadClass(idx, kind, key, id));
+  return idx.classes.get(id);
+}
+async function loadClass(idx, kind, key, id) {
   const cls = { id, kind, key, members: new Map(), files: [], errors: [], src: new Map(), vars: null, aliases: new Set() };
-  idx.classes.set(id, cls);
   for (const rel of classFiles(idx, kind, key)) {
     const src = await idx.read(rel);
     if (src == null) continue;
@@ -194,6 +202,7 @@ export async function getClass(idx, kind, key) {
     for (const [name, node] of membersOfAst(ast)) cls.members.set(name, { name, node, rel, line: node.loc.start.line, end: node.loc.end.line, overrides: cls.members.has(name) ? cls.members.get(name).rel : null });
   }
   if (kind === "controller") { const c = idx.controllers.get(key); cls.module = c && c.module; cls.form = c && c.form; }
+  else if (kind === "component") { cls.module = null; cls.ns = key; }
   else cls.module = key;
   return cls;
 }
@@ -389,7 +398,7 @@ export function analyzeFn(cls, idx, member, fnNode, outer) {
       case "service": if (prop === "invokeOperation") { at(c, conds, { type: "service", svcKind: "integration", obj: r.svc, verb: strArg(c.arguments[0]) || "?", callbacks: cbs }); return true; } return null;
       case "identity": if (IDENTITY_OPS.has(prop)) { at(c, conds, { type: "service", svcKind: "identity", obj: "Identity service", verb: prop, callbacks: cbs }); return true; } return null;
       case "ctrl": at(c, conds, { type: "ctrl", form: r.form, fn: prop, callbacks: cbs }); return true;
-      case "view": at(c, conds, { type: "widget", path: r.path.join("."), action: prop + "()" }); return true;
+      case "view": at(c, conds, { type: "widget", path: r.path.join("."), action: prop + "()", value: c.arguments.map((a) => srcOf(cls, rel, a).replace(/\s+/g, " ")).join(", ").slice(0, 120) }); return true;
       case "unknown": at(c, conds, { type: "unresolved", what: `.${prop}()`, why: r.why }); return true;
       default: return null;
     }
@@ -444,7 +453,7 @@ export function analyzeFn(cls, idx, member, fnNode, outer) {
 
 /* ================================================================ tracing one entry point */
 const MAX_DEPTH = 18, MAX_NODES = 1500;
-const layerOf = (cls) => (cls.kind === "controller" ? "controller" : cls.kind === "pc" ? "presentation" : "business");
+const layerOf = (cls) => (cls.kind === "controller" || cls.kind === "component" ? "controller" : cls.kind === "pc" ? "presentation" : "business");
 export const LAYERS = ["form", "controller", "presentation", "business", "model"];
 export const LAYER_LABEL = { form: "Form (screen)", controller: "Form controller", presentation: "Presentation controller", business: "Business controller", model: "Model / service" };
 
@@ -469,7 +478,7 @@ function keyFilter(keys, conds) {
 }
 
 export async function traceEntry(idx, start) {
-  // start: { cls, member, fnNode?, outerScope?, label?, form, module } — the function an action runs
+  // start: { cls, member, fnNode?, outerScope?, label?, form, module, viewPrefix?, instances?, formEntries? } — the function an action runs
   let count = 0, truncated = false;
   const done = new Map(); // function + callbacks it was given -> first expanded node (later calls refer to it)
   const sig = (b) => [...b.entries()].map(([i, x]) => `${i}=${x.cls.id}#${x.member.name}@${x.fnNode.loc.start.line}`).join(",");
@@ -477,9 +486,9 @@ export async function traceEntry(idx, start) {
     count++;
     const id = cls.id + "#" + member.name + (fnNode !== member.node ? "@" + fnNode.loc.start.line : "");
     const node = { id, uid: count, layer: layerOf(cls), cls: cls.id, clsLabel: clsLabel(cls), name: fnNode === member.node ? member.name : `${member.name} › ${viaLabel || "callback"}`,
-      rel: member.rel, line: fnNode.loc.start.line, end: fnNode.loc.end.line, edges: [], keys: keys || null, overrides: member.overrides, screen: ctx.screen };
+      rel: member.rel, line: fnNode.loc.start.line, end: fnNode.loc.end.line, edges: [], keys: keys || null, overrides: member.overrides, screen: ctx.screen, viewPrefix: ctx.prefix || null };
     if (path.has(id)) { node.cycle = true; return node; }
-    const dk = id + "|" + sig(bindings) + "|" + (keys ? keys.map((k) => k.key + "=" + k.value).join(",") : "") + "|" + ctx.screen;
+    const dk = id + "|" + sig(bindings) + "|" + (keys ? keys.map((k) => k.key + "=" + k.value).join(",") : "") + "|" + ctx.screen + "|" + (ctx.prefix || "");
     if (done.has(dk)) { node.ref = done.get(dk).uid; node.effect = done.get(dk).effect; return node; }
     if (depth > MAX_DEPTH || count > MAX_NODES) { node.cut = true; truncated = true; return node; }
     done.set(dk, node);
@@ -489,25 +498,41 @@ export async function traceEntry(idx, start) {
     const bindFrom = (cbs) => {
       const b = new Map();
       for (const cb of cbs || []) {
-        if (cb.member) b.set(cb.index, { cls, member: cls.members.get(cb.member), fnNode: cls.members.get(cb.member).node, label: cb.member });
-        else if (cb.inline) b.set(cb.index, { cls, member, fnNode: cb.inline, outerScope: scope, bindings, label: `inline function (line ${cb.inline.loc.start.line})` });
-        else if (cb.local) b.set(cb.index, { cls, member, fnNode: cb.local, outerScope: scope, bindings, label: cb.name });
+        if (cb.member) b.set(cb.index, { cls, member: cls.members.get(cb.member), fnNode: cls.members.get(cb.member).node, label: cb.member, prefix: ctx.prefix });
+        else if (cb.inline) b.set(cb.index, { cls, member, fnNode: cb.inline, outerScope: scope, bindings, label: `inline function (line ${cb.inline.loc.start.line})`, prefix: ctx.prefix });
+        else if (cb.local) b.set(cb.index, { cls, member, fnNode: cb.local, outerScope: scope, bindings, label: cb.name, prefix: ctx.prefix });
         else if (cb.param != null && bindings.has(cb.param)) b.set(cb.index, bindings.get(cb.param));
       }
       return b;
     };
-    const run = (b, d, keys2) => mk(b.cls, b.member, b.fnNode, b.bindings || new Map(), p2, d, b.outerScope, b.fnNode !== b.member.node ? b.label : null, keys2, { screen });
+    const run = (b, d, keys2) => mk(b.cls, b.member, b.fnNode, b.bindings || new Map(), p2, d, b.outerScope, b.fnNode !== b.member.node ? b.label : null, keys2, { screen, prefix: b.prefix || null });
     for (const s of steps) {
       if (s.type === "i18n" || s.type === "bind" || s.type === "infoGet") continue;
       if (keys && !keyFilter(keys, s.conds)) continue;
       const e = { step: s, kind: s.type };
-      const follow = async (tCls, fnName, cbs) => {
+      const follow = async (tCls, fnName, cbs, pfx) => {
         const m = tCls.members.get(fnName);
         if (!m) { e.missing = `${clsLabel(tCls)} has no function ${fnName}`; return; }
-        e.child = await mk(tCls, m, m.node, bindFrom(cbs), p2, depth + 1, null, null, null, { screen });
+        e.child = await mk(tCls, m, m.node, bindFrom(cbs), p2, depth + 1, null, null, null, { screen, prefix: pfx !== undefined ? pfx : tCls === cls ? ctx.prefix : null });
       };
       if (s.type === "self") await follow(cls, s.fn, s.callbacks);
-      else if (s.type === "local") e.child = await mk(cls, member, s.fn, bindings, p2, depth + 1, scope, s.name, null, { screen });
+      else if (s.type === "local") e.child = await mk(cls, member, s.fn, bindings, p2, depth + 1, scope, s.name, null, { screen, prefix: ctx.prefix });
+      else if (s.type === "widget") {
+        e.path = ctx.prefix ? (s.path ? `${ctx.prefix}.${s.path}` : ctx.prefix) : s.path;
+        // this.view.<component instance>.method() runs the component's own code
+        const ns = !ctx.prefix && start.instances && start.instances.get(s.path);
+        if (ns && /\(\)$/.test(s.action)) {
+          const t = await getClass(idx, "component", ns), fn = s.action.slice(0, -2);
+          if (t.members.has(fn)) { e.kind = "compCall"; e.comp = s.path; await follow(t, fn, [], s.path); }
+        }
+      } else if (s.type === "unresolved" && cls.kind === "component" && ctx.prefix && /^this\.(\w+)\(\)$/.test(s.what)) {
+        // a component calling one of its events: the form wired a handler to it (<instance>.<event>)
+        const ev = s.what.slice(5, -2);
+        const h = (start.formEntries || []).find((x) => x.widget === ctx.prefix && x.event === ev && x.member);
+        e.kind = "compEvent"; e.event = ev;
+        if (h) { e.child = await mk(h.cls, h.member, h.fnNode || h.member.node, new Map(), p2, depth + 1, h.outerScope || null, h.fnNode && h.fnNode !== h.member.node ? h.handlerLabel : null, null, { screen, prefix: h.viewPrefix || null }); e.isReturn = true; }
+        else e.noHandler = true;
+      }
       else if (s.type === "pc" || s.type === "bc") {
         const t = await getClass(idx, s.type, s.module);
         if (!t.files.length) e.missing = `module ${s.module} has no ${s.type === "pc" ? "presentation" : "business"} controller in this project`;
@@ -539,14 +564,14 @@ export async function traceEntry(idx, start) {
     return node;
   };
   const m = start.member;
-  const root = await mk(start.cls, m, start.fnNode || m.node, new Map(), new Set(), 0, start.outerScope || null, start.fnNode && start.fnNode !== m.node ? start.label : null, null, { screen: start.form });
+  const root = await mk(start.cls, m, start.fnNode || m.node, new Map(), new Set(), 0, start.outerScope || null, start.fnNode && start.fnNode !== m.node ? start.label : null, null, { screen: start.form, prefix: start.viewPrefix || null });
   annotate(root);
   return { root, truncated, nodes: count };
 }
-export const clsLabel = (cls) => (cls.kind === "controller" ? cls.key.split("/").pop() : `${cls.key} ${cls.kind === "pc" ? "presentation" : "business"}`);
+export const clsLabel = (cls) => (cls.kind === "controller" ? cls.key.split("/").pop() : cls.kind === "component" ? `${cls.key.split(".").pop()} component` : `${cls.key} ${cls.kind === "pc" ? "presentation" : "business"}`);
 
 // does a node lead to data, navigation or the screen? (used to fold helper calls that do nothing visible)
-const EFFECT_KINDS = new Set(["service", "nav", "updateForm", "present", "widget", "infoSet", "ctrl"]);
+const EFFECT_KINDS = new Set(["service", "nav", "updateForm", "present", "widget", "infoSet", "ctrl", "compEvent", "compCall"]);
 function annotate(n, seen = new Map()) {
   if (n.ref) { n.effect = !!seen.get(n.ref); return n.effect; } // the referenced call was expanded earlier in the walk
   n.effect = false;
@@ -595,12 +620,15 @@ export async function formActions(idx, formKey) {
   const asRel = cls.files.find((r) => r.endsWith("ControllerActions.js"));
   const widgetOfAs = new Map();
   // events can sit nested: component events under "data", widgets embedded inside another widget's file
-  const walkEv = (o, owner, wType) => {
+  // inside a component instance's "dataDiffs" every key is an inner widget id: its path is <instance>.<inner>
+  const walkEv = (o, owner, wType, inDiffs) => {
     for (const [k, v] of Object.entries(o || {})) {
       if (typeof v === "string" && /^AS_/.test(v)) widgetOfAs.set(v, { widget: owner, event: k.replace(/^ide_/, ""), wType });
       else if (v && typeof v === "object" && !Array.isArray(v)) {
+        if (k === "dataDiffs") { walkEv(v, owner, wType, true); continue; }
+        if (inDiffs) { const root = v.__info__ && v.__info__.isRoot; walkEv(v, root ? owner : `${owner}.${k}`, (v.__info__ && v.__info__.wType) || wType, false); continue; }
         const inner = typeof v.id === "string" ? v.id : v.wType || v["@class"] ? k : null;
-        walkEv(v, inner || owner, inner ? v.wType || String(v["@class"] || "").split(".").pop() : wType);
+        walkEv(v, inner || owner, inner ? v.wType || String(v["@class"] || "").split(".").pop() : wType, false);
       }
     }
   };
@@ -632,7 +660,42 @@ export async function formActions(idx, formKey) {
         member: target ? target.member : null, fnNode: target && target.fnNode, outerScope: target && target.outerScope, handlerLabel: target && target.label, unresolved: target ? null : `handler ${label} is not a function of this controller` });
     }
   }
-  return { cls, entries, W };
+  // 4) components on the form: their own action sequences and the events their controller sets in code
+  const comps = await componentIndex(idx);
+  const instances = new Map();
+  for (const w of W.values()) if (w.wType === "UserWidgetInstance" && w.sourceUserWidget && comps.get(w.sourceUserWidget)) instances.set(w.id, comps.get(w.sourceUserWidget));
+  const byNs = new Map();
+  for (const [inst, ns] of instances) { if (!byNs.has(ns)) byNs.set(ns, []); byNs.get(ns).push(inst); }
+  for (const [ns, insts] of byNs) {
+    const cc = await getClass(idx, "component", ns);
+    if (!cc.members.size) continue;
+    const short = ns.split(".").pop();
+    const ca = cc.files.find((r) => r.endsWith("ControllerActions.js"));
+    // the component's Visualizer actions are wired in its own widget files
+    const CW = new Map();
+    for (const rel of idx.project.files.keys()) if (rel.startsWith(`userwidgets/${ns}/userwidgetmodel.sm/`) && rel.endsWith(".json")) { const j = looseJson(await idx.read(rel)); if (j && j.id) CW.set(j.id, j); }
+    const asOf = new Map();
+    for (const w of CW.values()) for (const [k, v] of Object.entries(w)) if (typeof v === "string" && /^AS_/.test(v)) asOf.set(v, { widget: w.parent ? w.id : "", event: k.replace(/^ide_/, "") });
+    for (const m of cc.members.values()) {
+      if (m.rel === ca && /^AS_/.test(m.name)) {
+        const j = asOf.get(m.name);
+        if (!j) continue;
+        for (const inst of insts) entries.push({ id: `cas:${inst}:${m.name}`, group: "action", source: `${short} component · Visualizer action sequence`, widget: j.widget ? `${inst}.${j.widget}` : inst, event: j.event, label: `${j.widget ? inst + "." + j.widget : inst}.${j.event}`, cls: cc, member: m, viewPrefix: inst });
+        continue;
+      }
+      const { steps, scope } = analyzeFn(cc, idx, m, m.node);
+      for (const st of steps) if (st.type === "bind") {
+        const h = st.handler;
+        let target = null;
+        if (h && h.member) target = { member: cc.members.get(h.member) };
+        else if (h && h.inline) target = { member: m, fnNode: h.inline, outerScope: scope, label: `handler set in ${short}.${m.name} (line ${st.line})` };
+        else if (h && h.local) target = { member: m, fnNode: h.local, outerScope: scope, label: h.name };
+        for (const inst of insts) entries.push({ id: `ccode:${inst}:${m.name}:${st.line}:${st.path}.${st.event}`, group: "action", source: `${short} component code · ${m.name}() line ${st.line}`, widget: st.path ? `${inst}.${st.path}` : inst, event: st.event, label: `${st.path ? inst + "." + st.path : inst}.${st.event}`, cls: cc, setIn: m.name, conds: st.conds,
+          member: target ? target.member : null, fnNode: target && target.fnNode, outerScope: target && target.outerScope, handlerLabel: target && target.label, viewPrefix: inst, unresolved: target ? null : `handler ${st.handlerText} is not a function of this component` });
+      }
+    }
+  }
+  return { cls, entries, W, instances };
 }
 
 // who opens or updates this form: every literal reference in presentation and controller code
