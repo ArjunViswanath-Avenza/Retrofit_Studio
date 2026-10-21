@@ -96,7 +96,20 @@ export async function buildIndex(project, ch) {
   const models = {};
   for (const rel of F.keys()) { const s = rel.split("/"); if (s[0] === "models" && s.length >= 4) (models[s[2]] ||= new Set()).add(s[1]); }
   for (const k in models) models[k] = [...models[k]].sort();
-  return { project, ch, modules, forms, controllers, friendly, formsByName, ctrlByForm, managers, models, read, classes: new Map(), comps: null, i18n: undefined };
+  // methods the project adds to every controller through a prototype (modules/konymvcextns.js: MDAFormController.prototype.x = …)
+  // built in: kony.mvc FormController (konyframework.js) and the Infinity MDAFormController extension, which micro-apps
+  // inherit from the base app without carrying the file
+  const protoFns = new Map([
+    ...["destroy", "getCurrentForm", "getCurrentFormFriendlyName", "getPreviousForm", "getPreviousFormFriendlyName", "pauseNavigation", "resumeNavigation", "show"].map((n) => [n, { owner: "kony.mvc.FormController", rel: "konyframework.js (built in)", line: 1 }]),
+    ...["attachToModule", "didUpdateUI", "raiseEvent", "shouldUpdateUI", "updateUI", "willUpdateUI"].map((n) => [n, { owner: "MDAFormController", rel: "konymvcextns.js (base app)", line: 1 }]),
+  ]);
+  for (const rel of F.keys()) {
+    if (!/^modules\/.*\.js$/.test(rel)) continue;
+    const t = await read(rel);
+    if (!t || !t.includes(".prototype.")) continue;
+    for (const m of t.matchAll(/\b(\w*Controller)\.prototype\.(\w+)\s*=/g)) if (!protoFns.has(m[2]) || / \((built in|base app)\)$/.test(protoFns.get(m[2]).rel)) protoFns.set(m[2], { owner: m[1], rel, line: t.slice(0, m.index).split("\n").length });
+  }
+  return { project, ch, modules, forms, controllers, friendly, formsByName, ctrlByForm, managers, models, read, protoFns, classes: new Map(), comps: null, i18n: undefined };
 }
 
 /* ================================================================ classes (controller / presentation / business) */
@@ -329,9 +342,9 @@ export function analyzeFn(cls, idx, member, fnNode, outer) {
   const at = (node, conds, extra) => steps.push({ line: node.loc.start.line, code: lineOf(cls, rel, node.loc.start.line), conds: [...conds], ...extra });
   const cbRef = (a) => {
     if (!a) return null;
-    if (a.type === "FunctionExpression" || a.type === "ArrowFunctionExpression") return { inline: a };
     let n = a;
     if (n.type === "CallExpression" && n.callee.type === "MemberExpression" && n.callee.property.name === "bind") n = n.callee.object;
+    if (n.type === "FunctionExpression" || n.type === "ArrowFunctionExpression") return { inline: n };
     if (n.type === "MemberExpression" && !n.computed) { const r = recvKind(cls, idx, memberScope, n.object); if (r && r.kind === "self" && cls.members.has(n.property.name)) return { member: n.property.name }; }
     if (n.type === "Identifier") {
       if (memberScope.localFns.has(n.name)) return { local: memberScope.localFns.get(n.name), name: n.name };
@@ -381,6 +394,7 @@ export function analyzeFn(cls, idx, member, fnNode, outer) {
       case "self":
         if (cls.members.has(prop)) { at(c, conds, { type: "self", fn: prop, callbacks: cbs }); return true; }
         if (prop === "presentUserInterface") { const f = strArg(c.arguments[0]); at(c, conds, { type: "present", form: f ? f.split("/").pop() : null, keys: objKeys(c.arguments[1]) }); return true; }
+        if (cls.kind === "controller" && idx.protoFns && idx.protoFns.has(prop)) { const pf = idx.protoFns.get(prop); at(c, conds, { type: "framework", what: `this.${prop}()`, owner: pf.owner, rel: pf.rel, defLine: pf.line }); return true; }
         at(c, conds, { type: "unresolved", what: `this.${prop}()`, why: "not a function of this class (framework or inherited)" }); return true;
       case "pc": at(c, conds, { type: "pc", module: r.module, fn: prop, how: r.how, callbacks: cbs }); return true;
       case "bc": if (!r.module) { at(c, conds, { type: "unresolved", what: `${r.getter}.${prop}()`, why: `${r.getter} is not listed in ApplicationManager` }); return true; }
@@ -428,7 +442,10 @@ export function analyzeFn(cls, idx, member, fnNode, outer) {
           const prop = n.left.computed ? strArg(n.left.property) : n.left.property.name;
           if (lr && lr.kind === "view" && prop) {
             const path = lr.path.join(".");
-            if (/^on[A-Z]/.test(prop) || /^on[a-z]+$/.test(prop) || (!path && /^(init|preShow|postShow|onHide|onDestroy)$/.test(prop))) {
+            // events: onX, form lifecycle, and any function given to a widget property — components raise custom events
+            // (this.view.resetPasswordComponent.showLogin = function () {…})
+            const fnGiven = !!path && !!cbRef(n.right);
+            if (/^on[A-Z]/.test(prop) || /^on[a-z]+$/.test(prop) || (!path && /^(init|preShow|postShow|onHide|onDestroy)$/.test(prop)) || fnGiven) {
               const h = cbRef(n.right);
               at(n, conds, { type: "bind", path, event: prop, handler: h, handlerText: srcOf(cls, rel, n.right).split("\n")[0].slice(0, 100) });
               if (h && h.inline) skipFns.add(h.inline);

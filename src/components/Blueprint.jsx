@@ -4,9 +4,11 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import "./blueprint.css";
 import { FormPreview } from "./FormPreview";
 import { FlowJourney } from "./FlowJourney";
+import { DevTrace } from "./DevTrace";
+import { FormLocator } from "./Locator";
 import { triggerText } from "../lib/journey";
 import { widgetInfo } from "../lib/preview";
-import { getClass, analyzeFn, traceEntry, formActions, formArrivals, formWidgets, componentIndex, i18nText, LAYERS, LAYER_LABEL, clsLabel } from "../lib/blueprint";
+import { getClass, analyzeFn, traceEntry, formActions, formArrivals, formWidgets, componentIndex, i18nText, LAYER_LABEL, clsLabel } from "../lib/blueprint";
 
 const nf = (n) => Number(n || 0).toLocaleString("en-US");
 const CH_LABEL = { desktop: "Web (desktop)", mobile: "Mobile", tablet: "Tablet", watch: "Watch" };
@@ -56,6 +58,7 @@ export const BP_MENU = [
   { id: "bp-module", ico: "▦", label: "Module", desc: "Forms, controllers, presentation, business" },
   { id: "bp-form", ico: "▤", label: "Form", desc: "Screen, actions, data in & out" },
   { id: "bp-flow", ico: "⇄", label: "Code flow breakdown", desc: "One action to the model and back" },
+  { id: "bp-locate", ico: "⌖", label: "Action locator", desc: "Where every action lives, project-wide" },
 ];
 
 /* ================================================================ project blueprint */
@@ -266,6 +269,7 @@ export function stepText(s, e) {
     case "infoGet": return <>reads stored data <b className="mono">{s.key || "(name at run time)"}</b> (getCustomInfo)</>;
     case "param": return <>calls back the function it was given as <b className="mono">{s.name}</b></>;
     case "bind": return <>sets <b className="mono">{s.path || "(form)"}.{s.event}</b> → {s.handlerText}</>;
+    case "framework": return <>calls <b className="mono">{s.what}</b> <span className="tag">— shared on every controller ({s.owner}.prototype in {s.rel.split("/").pop()})</span></>;
     case "unresolved": return <span className="bp-muted">not resolved: <span className="mono">{s.what}</span> — {s.why}</span>;
     default: return s.type;
   }
@@ -306,7 +310,7 @@ export function BlueprintForm({ idx, formKey, setForm, tab, setTab, openFlow, ca
     return () => { alive = false; };
   }, [idx, formKey, f, cache]);
   if (!f) return <Picker title="Form" items={[...idx.forms.keys()].sort((a, b) => a.split("/").pop().localeCompare(b.split("/").pop()))} onPick={setForm} render={(k) => `${k.split("/").pop()}  ·  ${k.split("/").slice(0, -1).join("/")}`} />;
-  const tabs = [["preview", "Preview"], ["summary", "Summary"], ["screen", "Screen structure"], ["actions", "User actions"], ["data", "Data in & out"]];
+  const tabs = [["preview", "Preview"], ["summary", "Summary"], ["where", "Where it lives"], ["screen", "Screen structure"], ["actions", "User actions"], ["data", "Data in & out"]];
   return (
     <div className="bp-page">
       <h2 className="page">▤ {f.name}</h2>
@@ -321,6 +325,7 @@ export function BlueprintForm({ idx, formKey, setForm, tab, setTab, openFlow, ca
             {prog && <div className="bp-prog"><span className="tag">Tracing every action to build the summary and data in & out · {prog.done} / {prog.total}</span><div className="progress"><div style={{ width: (prog.done / prog.total) * 100 + "%" }} /></div></div>}
             {tab === "preview" && <FormPreview idx={idx} f={f} A={A} cache={cache} openFlow={openFlow} />}
             {tab === "summary" && <FormSummary idx={idx} f={f} A={A} sum={sum} openFlow={openFlow} />}
+            {tab === "where" && <FormLocator idx={idx} f={f} A={A} cache={cache} openFlow={openFlow} />}
             {tab === "screen" && <ScreenTree idx={idx} f={f} A={A} openFlow={openFlow} />}
             {tab === "actions" && <ActionList A={A} sum={sum} openFlow={openFlow} />}
             {tab === "data" && <DataInOut idx={idx} A={A} sum={sum} openFlow={openFlow} />}
@@ -563,11 +568,10 @@ export function BlueprintFlow({ idx, formKey, setForm, entryId, setEntry, cache,
   const f = useMemo(() => (formKey && idx.forms.get(formKey)) || (external ? { key: "(function)", name: null, module: external.cls.module } : null), [idx, formKey, external]);
   const [A, setA] = useState(null);
   const [T, setT] = useState(null);
-  const [view, setView] = useState("seq");
-  const [onlyEffect, setOnlyEffect] = useState(true);
   const [sel, setSel] = useState(null); // { rel, line, from, to }
   const [q, setQ] = useState("");
   const [dev, setDev] = useState(false);
+  const [focus, setFocus] = useState(true);
   const [info, setInfo] = useState(null);
   useEffect(() => { let alive = true; if (formKey) widgetInfo(idx, formKey).then((m) => alive && setInfo(m)); else setInfo(new Map()); return () => { alive = false; }; }, [idx, formKey]);
   useEffect(() => {
@@ -599,7 +603,7 @@ export function BlueprintFlow({ idx, formKey, setForm, entryId, setEntry, cache,
     <div className="bp-page">
       <h2 className="page">⇄ Code flow breakdown · {f.name || external.label}</h2>
       <div className="crumb">Pick something a person can do on this screen and watch, step by step, what the app does — on screen, behind the scenes and with the bank's systems — and where it ends up.</div>
-      <div className="bp-flowgrid">
+      <div className={"bp-flowgrid" + (dev && focus ? " focus" : "")}>
         <div className="bp-list bp-entries">
           <input type="text" placeholder="Find an action…" value={q} onChange={(e) => setQ(e.target.value)} />
           {!A && formKey && <p className="note">Reading actions…</p>}
@@ -628,25 +632,7 @@ export function BlueprintFlow({ idx, formKey, setForm, entryId, setEntry, cache,
             </>
           ) : (
             <>
-              <div className="bp-devbar"><button className="btn" onClick={() => { setDev(false); setSel(null); }}>← Back to the story</button><span className="tag">Developer view: every call, callback and condition, with the code.</span></div>
-              <FlowStory idx={idx} entry={entry} T={T} />
-              <div className="bp-flowbar">
-                <div className="seg" style={{ margin: 0 }}><button className={view === "seq" ? "on" : ""} onClick={() => setView("seq")}>Sequence diagram</button><button className={view === "tree" ? "on" : ""} onClick={() => setView("tree")}>Call tree</button></div>
-                <span className={"chip" + (onlyEffect ? " on" : "")} onClick={() => setOnlyEffect((v) => !v)}>{onlyEffect ? "✓ " : ""}only steps that reach a service, a navigation or the screen</span>
-                <span className="tag">Click any step to see its code · {nf(T.nodes)} function calls followed{T.truncated ? " · stopped at the depth limit on some paths (marked …)" : ""}</span>
-              </div>
-              <div className="bp-flowbody">
-                <div className="bp-flowview">
-                  {view === "seq" ? <Sequence entry={entry} T={T} onlyEffect={onlyEffect} onPick={setSel} sel={sel} /> : <CallTree T={T} onlyEffect={onlyEffect} onPick={setSel} sel={sel} />}
-                </div>
-                {sel && (
-                  <div className="bp-drawer">
-                    <div className="bp-drawerhead"><div className="bp-selhead">{sel.title}</div><button className="btn ghost" onClick={() => setSel(null)}>✕ Close</button></div>
-                    {sel.cond && <div className="tag" style={{ marginBottom: 6 }}>only {sel.cond}</div>}
-                    <Code idx={idx} rel={sel.rel} from={sel.from} to={sel.to} hl={sel.line} />
-                  </div>
-                )}
-              </div>
+              <DevTrace idx={idx} entry={entry} T={T} focus={focus} setFocus={setFocus} onBack={() => { setDev(false); setSel(null); }} />
             </>
           )}
         </div>
@@ -691,151 +677,3 @@ export function FlowStory({ idx, entry, T }) {
   );
 }
 
-// rows of the sequence diagram, in the order the code runs them
-function seqRows(entry, T, onlyEffect) {
-  const rows = [];
-  const lane = (l) => LAYERS.indexOf(l);
-  rows.push({ from: 0, to: lane(T.root.layer), label: entry.group === "arrival" ? `${entry.label}` : `${entry.label} (user / form event)`, node: T.root, line: T.root.line, kind: "start" });
-  const seen = new Set(), rowOf = new Map([[T.root.uid, 1]]);
-  const into = (child) => { if (child && !rowOf.has(child.uid)) rowOf.set(child.uid, rows.length); };
-  const walk = (n) => {
-    if (!n) return;
-    if (n.ref) { rows.push({ from: lane(n.layer), to: lane(n.layer), label: `${n.name}() — same as step ${rowOf.get(n.ref) || "?"} above`, node: n, line: n.line, kind: "ref", mute: true }); return; }
-    if (n.cycle) { rows.push({ from: lane(n.layer), to: lane(n.layer), label: `${n.name}() — already running on this path (loop)`, node: n, line: n.line, kind: "ref", mute: true }); return; }
-    if (n.cut) { rows.push({ from: lane(n.layer), to: lane(n.layer), label: `${n.name}() … stopped at the depth limit`, node: n, line: n.line, kind: "ref", mute: true }); return; }
-    if (seen.has(n.uid)) return;
-    seen.add(n.uid);
-    const me = lane(n.layer);
-    for (const e of n.edges) {
-      if (onlyEffect && !e.effect) continue;
-      const s = e.step, base = { node: n, line: s.line, cond: s.conds[s.conds.length - 1], step: s, uid: n.uid };
-      switch (e.kind) {
-        case "self": case "local": rows.push({ ...base, from: me, to: me, label: `${s.fn || s.name}()`, kind: "self" }); into(e.child); walk(e.child); break;
-        case "pc": case "bc": case "ctrl":
-          rows.push({ ...base, from: me, to: e.child ? lane(e.child.layer) : me, label: e.kind === "ctrl" ? `${s.form}.${s.fn}()` : `${s.module}.${s.fn}()`, kind: "call", missing: e.missing });
-          into(e.child); walk(e.child); break;
-        case "service":
-          rows.push({ ...base, from: me, to: 4, label: `${s.obj}.${s.verb}`, kind: "service" });
-          for (const r of e.returns || []) if (r.node) { rows.push({ ...base, from: 4, to: lane(r.node.layer), label: `↩ answer → ${r.label}`, kind: "return" }); into(r.node); walk(r.node); }
-          break;
-        case "param":
-          if (e.child) { rows.push({ ...base, from: me, to: lane(e.child.layer), label: `↩ ${s.name}() → ${e.child.clsLabel}.${e.child.name}`, kind: "return" }); into(e.child); walk(e.child); }
-          else rows.push({ ...base, from: me, to: me, label: `↩ calls back ${s.name}() (given by its caller)`, kind: "self", mute: true });
-          break;
-        case "updateForm": case "present":
-          rows.push({ ...base, from: me, to: 1, label: `↩ ${e.kind === "present" ? "presentUserInterface" : "updateForm"} → ${e.target || "?"}.${e.child ? e.child.name : "?"}  {${s.keys ? s.keys.map((k) => k.key).join(", ") : "data"}}`, kind: "return", missing: e.missing });
-          into(e.child); walk(e.child); break;
-        case "nav": rows.push({ ...base, from: me, to: 0, label: `opens ${s.form || "(form chosen at run time)"}`, kind: "nav" }); break;
-        case "widget": rows.push({ ...base, from: me, to: 0, label: `${e.path || s.path || "(form)"} ${s.action}`, kind: "widget" }); break;
-        case "compEvent": rows.push({ ...base, from: me, to: 1, label: `↩ raises ${e.event}${e.child ? ` → ${e.child.clsLabel}.${e.child.name}` : " (not handled)"}`, kind: "return" }); into(e.child); walk(e.child); break;
-        case "compCall": rows.push({ ...base, from: me, to: 1, label: `${e.comp}.${s.action}`, kind: "call" }); into(e.child); walk(e.child); break;
-        case "infoSet": rows.push({ ...base, from: me, to: me, label: `stores "${s.key || "?"}" (setCustomInfo)`, kind: "self" }); break;
-        case "unresolved": rows.push({ ...base, from: me, to: me, label: `? ${s.what} — ${s.why}`, kind: "self", mute: true }); break;
-        default: break;
-      }
-    }
-  };
-  walk(T.root);
-  return rows;
-}
-
-function Sequence({ entry, T, onlyEffect, onPick, sel }) {
-  const rows = useMemo(() => seqRows(entry, T, onlyEffect), [entry, T, onlyEffect]);
-  const W = 1000, X = [70, 270, 470, 670, 880], RH = 30, TOP = 54;
-  const H = TOP + rows.length * RH + 20;
-  const shownRows = rows.slice(0, 1500);
-  const pick = (r, i) => onPick({ rel: r.node.rel, line: r.line, from: r.node.line, to: r.node.end, cond: r.cond, title: `${i + 1}. ${r.node.clsLabel}.${r.node.name} — line ${r.line}`, i });
-  return (
-    <div className="bp-seqwrap">
-      <svg className="bp-seq" width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
-        <defs>
-          <marker id="bpA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" className="bp-ah" /></marker>
-          <marker id="bpR" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" className="bp-ahr" /></marker>
-        </defs>
-        {LAYERS.map((l, i) => (
-          <g key={l}>
-            <rect x={X[i] - 78} y={6} width={156} height={30} rx={8} className={"bp-lanehead l" + i} />
-            <text x={X[i]} y={26} textAnchor="middle" className="bp-lanet">{LAYER_LABEL[l]}</text>
-            <line x1={X[i]} y1={36} x2={X[i]} y2={H} className="bp-life" />
-          </g>
-        ))}
-        {shownRows.map((r, i) => {
-          const y = TOP + i * RH + RH / 2;
-          const on = sel && sel.i === i;
-          const cls = `bp-msg k-${r.kind}${r.mute ? " mute" : ""}${on ? " on" : ""}${r.missing ? " miss" : ""}`;
-          const lx = Math.min(X[r.from], X[r.to]);
-          if (r.from === r.to) {
-            const x = X[r.from];
-            return (
-              <g key={i} className={cls} onClick={() => pick(r, i)} style={{ "--d": Math.min(i, 60) * 25 + "ms" }}>
-                <rect x={0} y={y - RH / 2} width={W} height={RH} className="bp-hit" />
-                <path d={`M${x},${y - 6} h18 v12 h-18`} className="bp-line" markerEnd="url(#bpA)" />
-                <text x={x + 24} y={y + 4} className="bp-ml">{i + 1}. {trunc(r.label, 74)}</text>
-              </g>
-            );
-          }
-          return (
-            <g key={i} className={cls} onClick={() => pick(r, i)} style={{ "--d": Math.min(i, 60) * 25 + "ms" }}>
-              <rect x={0} y={y - RH / 2} width={W} height={RH} className="bp-hit" />
-              <line x1={X[r.from]} y1={y + 4} x2={X[r.to]} y2={y + 4} className="bp-line" markerEnd={r.kind === "return" ? "url(#bpR)" : "url(#bpA)"} />
-              <text x={lx + 6} y={y - 2} className="bp-ml">{i + 1}. {trunc(r.label, Math.max(26, Math.round(Math.abs(X[r.to] - X[r.from]) / 6.4)))}{r.missing ? " — missing" : ""}</text>
-            </g>
-          );
-        })}
-      </svg>
-      {rows.length > 1500 && <p className="tag">First 1,500 steps drawn. Switch to the call tree for the rest.</p>}
-    </div>
-  );
-}
-const trunc = (s, n) => (s.length > n ? s.slice(0, n - 1) + "…" : s);
-
-function CallTree({ T, onlyEffect, onPick, sel }) {
-  const [closed, setClosed] = useState(() => new Set());
-  const toggle = (k) => setClosed((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
-  const node = (n, d, key) => {
-    const kids = [];
-    for (const [i, e] of n.edges.entries()) {
-      if (onlyEffect && !e.effect) continue;
-      kids.push(<EdgeRow key={key + "." + i} e={e} n={n} d={d + 1} k={key + "." + i} closed={closed} toggle={toggle} onPick={onPick} sel={sel} node={node} />);
-    }
-    return kids;
-  };
-  return (
-    <div className="bp-ctree">
-      <div className={"bp-cn l-" + T.root.layer} onClick={() => onPick({ rel: T.root.rel, line: T.root.line, from: T.root.line, to: T.root.end, title: `${T.root.clsLabel}.${T.root.name}` })}>
-        <span className="bp-lay">{LAYER_LABEL[T.root.layer]}</span> <b className="mono">{T.root.clsLabel}.{T.root.name}</b> <span className="tag">{short(T.root.rel)}:{T.root.line}</span>
-      </div>
-      {node(T.root, 0, "r")}
-    </div>
-  );
-}
-function EdgeRow({ e, n, d, k, closed, toggle, onPick, sel, node }) {
-  const s = e.step;
-  const child = e.child;
-  const isOpen = !closed.has(k);
-  const pick = () => onPick({ rel: n.rel, line: s.line, from: n.line, to: n.end, cond: s.conds[s.conds.length - 1], title: `${n.clsLabel}.${n.name} — line ${s.line}`, k });
-  const kids = [];
-  if (child && !child.ref && !child.cycle && !child.cut) kids.push(...node(child, d, k));
-  for (const [j, r] of (e.returns || []).entries()) if (r.node) {
-    kids.push(
-      <div key={k + "r" + j} style={{ marginLeft: (d + 1) * 18 }}>
-        <div className={"bp-cn ret l-" + r.node.layer} onClick={() => onPick({ rel: r.node.rel, line: r.node.line, from: r.node.line, to: r.node.end, title: `${r.node.clsLabel}.${r.node.name}` })}>
-          <span className="bp-lay">↩ answer</span> <b className="mono">{r.label}</b> <span className="tag">runs {r.node.clsLabel}.{r.node.name} · {short(r.node.rel)}:{r.node.line}</span>
-        </div>
-        {!r.node.ref && !r.node.cycle && node(r.node, d + 1, k + "r" + j)}
-      </div>
-    );
-  }
-  return (
-    <div style={{ marginLeft: d * 18 }}>
-      <div className={"bp-cn k-" + e.kind + (sel && sel.k === k ? " on" : "")} onClick={pick}>
-        {kids.length > 0 ? <span className="bp-tog" onClick={(ev) => { ev.stopPropagation(); toggle(k); }}>{isOpen ? "▾" : "▸"}</span> : <span className="bp-tog">·</span>}
-        <span className="tag">L{s.line}</span> {stepText(s, e)}
-        {child && <span className="tag"> → <span className={"bp-lay l-" + child.layer}>{LAYER_LABEL[child.layer]}</span> {child.clsLabel}.{child.name}{child.ref ? ` (same as #${child.ref}, shown above)` : child.cycle ? " (loop)" : child.cut ? " (depth limit)" : ""}</span>}
-        {e.missing && <span className="bp-warn"> — {e.missing}</span>}
-        {s.conds.length > 0 && <div className="bp-cond">only {s.conds[s.conds.length - 1]}</div>}
-      </div>
-      {isOpen && kids}
-    </div>
-  );
-}
