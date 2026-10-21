@@ -21,6 +21,7 @@ import { inventory, buildPlan, POLICY_DEFAULT } from "./lib/mapplan";
 import { VisualizeUpload, PlanBar, FlowView, AppsView, ModulesView, ReviewView, ModuleDrawer } from "./components/Visualize";
 import { FormAtlas } from "./components/FormAtlas";
 import { BlueprintUpload, BlueprintHome, BlueprintModule, BlueprintForm, BlueprintFlow, BP_MENU } from "./components/Blueprint";
+import { ProjectLocator } from "./components/Locator";
 import { loadProject as bpLoad, buildIndex as bpIndex, clsLabel as bpClsLabel } from "./lib/blueprint";
 import { loadNames, saveNames, validate, clean } from "./lib/names";
 
@@ -261,6 +262,8 @@ export default function App() {
   };
   const bpOpenForm = (k) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpTab("preview"); setBpEntry(null); setBpExternal(null); setBpNav("bp-form"); };
   const bpOpenFlow = (id) => { setBpEntry(id); setBpExternal(null); setBpNav("bp-flow"); };
+  const bpOpenFormTab = (k, tab) => { bpOpenForm(k); setBpTab(tab); };
+  const bpOpenFormFlow = (k, id) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpExternal(null); setBpEntry(id); setBpNav("bp-flow"); };
   const bpTraceFrom = ({ cls, member, label }) => { setBpExternal({ id: `ext:${cls.id}#${member.name}`, group: "arrival", source: "started from a function", label: label || `${bpClsLabel(cls)}.${member.name}`, cls, member }); setBpEntry(null); setBpNav("bp-flow"); };
   const onFabFolder = (i, fileList) => {
     const scan = scanFabricFolder(fileList);
@@ -410,6 +413,7 @@ export default function App() {
           {bpNav === "bp-home" && <BlueprintHome idx={bpIdx} open={(m) => { setBpModule(m); setBpNav("bp-module"); }} />}
           {bpNav === "bp-module" && <BlueprintModule idx={bpIdx} module={bpModule} setModule={setBpModule} openForm={bpOpenForm} traceFrom={bpTraceFrom} />}
           {bpNav === "bp-form" && <BlueprintForm idx={bpIdx} formKey={bpForm} setForm={bpOpenForm} tab={bpTab} setTab={setBpTab} openFlow={bpOpenFlow} cache={bpCache} />}
+          {bpNav === "bp-locate" && <ProjectLocator idx={bpIdx} cache={bpCache} openFormTab={(k) => bpOpenFormTab(k, "where")} openFormFlow={bpOpenFormFlow} />}
           {bpNav === "bp-flow" && <BlueprintFlow idx={bpIdx} formKey={bpExternal ? null : bpForm} setForm={(k) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpEntry(null); }} entryId={bpEntry} setEntry={setBpEntry} cache={bpCache} external={bpExternal} />}
         </Shell>
       )}
