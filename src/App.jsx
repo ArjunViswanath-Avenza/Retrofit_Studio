@@ -190,7 +190,7 @@ export default function App() {
   const [bpNav, setBpNav] = useState("bp-home");
   const [bpModule, setBpModule] = useState(null);
   const [bpForm, setBpForm] = useState(null);
-  const [bpTab, setBpTab] = useState("summary");
+  const [bpTab, setBpTab] = useState("preview");
   const [bpEntry, setBpEntry] = useState(null);
   const [bpExternal, setBpExternal] = useState(null);
   const bpCache = useMemo(() => new Map(), [bpIdx]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -259,7 +259,7 @@ export default function App() {
     const idx = await bpIndex(bpPick, bpCh);
     setBpIdx(idx); setBpNav("bp-home"); setBpModule(null); setBpForm(null); setBpEntry(null); setBpExternal(null); setBpBusy(false);
   };
-  const bpOpenForm = (k) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpTab("summary"); setBpEntry(null); setBpExternal(null); setBpNav("bp-form"); };
+  const bpOpenForm = (k) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpTab("preview"); setBpEntry(null); setBpExternal(null); setBpNav("bp-form"); };
   const bpOpenFlow = (id) => { setBpEntry(id); setBpExternal(null); setBpNav("bp-flow"); };
   const bpTraceFrom = ({ cls, member, label }) => { setBpExternal({ id: `ext:${cls.id}#${member.name}`, group: "arrival", source: "started from a function", label: label || `${bpClsLabel(cls)}.${member.name}`, cls, member }); setBpEntry(null); setBpNav("bp-flow"); };
   const onFabFolder = (i, fileList) => {
