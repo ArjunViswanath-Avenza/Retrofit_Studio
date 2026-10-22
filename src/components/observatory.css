@@ -1,0 +1,196 @@
+/* ---- Observatory: the project as a sky ---- */
+.ob{--c-nav:#5ec8ff;--c-comp:#b48cff;--c-call:#ffad5c;--glass:rgba(10,14,26,.78);--gline:rgba(150,175,230,.18);--tx:#e6ebf5;--tm:#93a0b8;
+  position:relative;margin:-20px -26px;height:calc(100vh - 66px);overflow:hidden;color:var(--tx);user-select:none;
+  background:radial-gradient(1200px 700px at 70% 20%,rgba(64,48,120,.35),transparent 60%),radial-gradient(900px 600px at 15% 85%,rgba(20,70,110,.35),transparent 60%),linear-gradient(180deg,#04060d,#070b18 60%,#05070f)}
+.ob .k-nav{--kc:var(--c-nav)}.ob .k-comp{--kc:var(--c-comp)}.ob .k-call{--kc:var(--c-call)}.ob .k-mix{--kc:#e8eefc}
+@keyframes obSpin{to{transform:rotate(360deg)}}
+@keyframes obForm{from{opacity:0;transform:scale(.35) rotate(-40deg)}to{opacity:1;transform:none}}
+@keyframes obFade{from{opacity:0}to{opacity:1}}
+@keyframes obTw{0%,100%{opacity:.6}50%{opacity:1}}
+@keyframes obFlow{to{stroke-dashoffset:-16}}
+@keyframes obFlowIn{to{stroke-dashoffset:16}}
+@keyframes obPulse{0%,100%{transform:scale(1);opacity:.75}50%{transform:scale(1.18);opacity:1}}
+@keyframes obIn{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+@keyframes obDrop{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+@keyframes obRing{from{stroke-dashoffset:0}to{stroke-dashoffset:-60}}
+
+.ob-stars{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.ob-svg{position:absolute;inset:0;width:100%;height:100%;cursor:grab;font-family:var(--sans);touch-action:none}
+.ob-svg:active{cursor:grabbing}
+.ob-svg.still *,.ob.paused .ob-svg *{animation-play-state:paused!important}
+.ob-bg{fill:transparent}
+
+/* galaxies */
+.ob-gal{animation:obForm 1.6s cubic-bezier(.2,.8,.2,1) both;animation-delay:var(--d);transform-box:fill-box;transform-origin:center;transition:opacity .6s}
+.ob-gal.dim{opacity:.22}
+.ob-halo{cursor:pointer;transition:opacity .4s}
+.ob-gal:hover .ob-halo{opacity:1.6}
+.ob-arms{animation:obSpin 180s linear infinite;pointer-events:none}
+.ob-arm{fill:none;stroke:hsl(var(--h) 80% 62%);stroke-opacity:.11;stroke-linecap:round}
+.ob-armt{fill:none;stroke:hsl(var(--h) 90% 82%);stroke-opacity:.22;stroke-linecap:round}
+.ob-dust{fill:hsl(var(--h) 90% 88%);opacity:.55}
+.ob-core{pointer-events:none;animation:obPulse 6s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
+.ob-sys{cursor:pointer}
+.ob-shit{fill:transparent}
+.ob-star{fill:hsl(var(--h) 85% 82%);r:max(var(--r),calc(var(--k) * 1.6px));animation:obTw var(--tw) ease-in-out infinite var(--twd);transition:r .2s}
+.ob-sys:hover .ob-star{fill:#fff;r:max(calc(var(--r) * 1.5),calc(var(--k) * 3.5px));filter:drop-shadow(0 0 3px hsl(var(--h) 90% 70%))}
+.ob-sys.here .ob-star{opacity:0}
+.ob-glabel{font-size:calc(var(--k) * 15px);font-weight:700;fill:var(--tx);letter-spacing:.3px;paint-order:stroke;stroke:rgba(4,6,13,.85);stroke-width:calc(var(--k) * 3px);cursor:pointer;opacity:clamp(0,calc((var(--k) - .08) * 8),1)}
+.ob-gsub{font-size:calc(var(--k) * 11px);fill:var(--tm);paint-order:stroke;stroke:rgba(4,6,13,.85);stroke-width:calc(var(--k) * 3px);pointer-events:none;opacity:clamp(0,calc((var(--k) - .08) * 8),1)}
+.ob-slabel{font-size:calc(var(--k) * 11px);fill:#dbe3f2;paint-order:stroke;stroke:rgba(4,6,13,.9);stroke-width:calc(var(--k) * 3px);pointer-events:none;opacity:clamp(0,calc((1.15 - var(--k)) * 3),1);font-family:var(--mono)}
+.lvl-sky .ob-slabel{display:none}
+.lvl-system .ob-slabel,.lvl-system .ob-gal.focus .ob-glabel,.lvl-system .ob-gal.focus .ob-gsub{display:none}
+.lvl-system .ob-gal.focus .ob-sys:not(.here){opacity:.18}
+.lvl-system .ob-gal.focus .ob-arms{opacity:.35}
+.lvl-galaxy .ob-gal.focus .ob-halo{cursor:default}
+.nolabels .ob-slabel,.nolabels .ob-gsub,.nolabels .ob-qlabel{display:none}
+
+/* quasars: modules / apps without forms */
+.ob-qsr{cursor:pointer;animation:obFade 1.2s ease both;animation-delay:var(--d);transition:opacity .6s}
+.ob-qsr.dim{opacity:.2}
+.ob-qcore{fill:#f2f7ff;filter:drop-shadow(0 0 4px #9fd0ff)}
+.ob-jets{animation:obSpin 24s linear infinite;pointer-events:none}
+.ob-jet{stroke:#9fd0ff;stroke-opacity:.35;stroke-width:calc(var(--k) * 1.4px);stroke-linecap:round}
+.ob-qlabel{font-size:calc(var(--k) * 10px);fill:#a9c3e0;paint-order:stroke;stroke:rgba(4,6,13,.85);stroke-width:calc(var(--k) * 3px);opacity:clamp(0,calc((var(--k) - .08) * 8),1)}
+.ob-qsr:hover .ob-qlabel{fill:#fff}
+
+/* links */
+.ob-gl{fill:none;stroke:var(--kc);stroke-opacity:.42;stroke-dasharray:3 5;stroke-linecap:round;animation:obFlow 2.6s linear infinite;pointer-events:none;transition:stroke-opacity .3s}
+.ob-glinks.focused .ob-gl{stroke-opacity:.05}
+.ob-glinks.focused .ob-gl.on{stroke-opacity:.95}
+.lvl-system .ob-glinks{opacity:.25}
+.ob-sl{fill:none;stroke:var(--kc);stroke-width:1.3;stroke-opacity:.6;stroke-dasharray:5 5;animation:obFlow 1.4s linear infinite;pointer-events:none;transition:stroke-opacity .25s;animation-delay:.6s}
+.ob-sl.k-comp{stroke-dasharray:1 4;stroke-linecap:round;stroke-width:1.6;stroke-opacity:.45;animation:none}
+.ob-sl.ext{stroke-opacity:.2}
+.ob-slinks{animation:obFade .8s ease both;animation-delay:.6s}
+.ob-slinks.focused .ob-sl{stroke-opacity:.06}
+.ob-slinks.focused .ob-sl.on{stroke-opacity:1;stroke-width:2}
+.lvl-system .ob-slinks{opacity:.3}
+
+/* a solar system */
+.ob-solar{animation:obFade .9s ease both;animation-delay:.45s}
+.ob-orbit{fill:none;stroke:rgba(200,215,255,.14);stroke-dasharray:2 4;vector-effect:non-scaling-stroke}
+.ob-sun{filter:drop-shadow(0 0 10px rgba(255,170,80,.75));cursor:pointer}
+.ob-sun.pending{animation:obPulse 1.2s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
+.ob-corona{opacity:.55;animation:obPulse 4s ease-in-out infinite;pointer-events:none}
+.ob-sunlabel{font-size:calc(var(--k) * 16px);font-weight:800;fill:#fff3dc;paint-order:stroke;stroke:rgba(4,6,13,.85);stroke-width:calc(var(--k) * 3.5px);font-family:var(--mono)}
+.ob-ring{animation:obSpin 90s linear infinite}
+.ob-ring.r1{animation-duration:70s}.ob-ring.r2{animation-duration:120s}.ob-ring.r3{animation-duration:170s}.ob-ring.svc{animation-duration:300s}
+.ob-up{animation:obSpin 90s linear infinite reverse}
+.ob-ring.r1 .ob-up{animation-duration:70s}.ob-ring.r2 .ob-up{animation-duration:120s}.ob-ring.r3 .ob-up{animation-duration:170s}.ob-ring.svc .ob-up{animation-duration:300s}
+.ob-ring:hover,.ob-ring:hover .ob-up,.ob-ring:hover .ob-moons{animation-play-state:paused}
+.ob-moons{animation:obSpin 16s linear infinite}
+.ob-moon{fill:#ffe1b3;opacity:.85}
+.ob-body{cursor:pointer}
+.ob-spoke{stroke:rgba(200,215,255,.16);stroke-width:1;pointer-events:none}
+.ob-body:hover .ob-spoke,.ob-body.sel .ob-spoke{stroke:rgba(255,255,255,.55)}
+.ob-planet{transition:filter .2s}
+.ob-body.ctrl .ob-planet{fill:#ffb15c;filter:drop-shadow(0 0 2px rgba(255,177,92,.8))}
+.ob-body.comp .ob-planet{fill:#b48cff;filter:drop-shadow(0 0 2px rgba(180,140,255,.7))}
+.ob-body.comp.common .ob-planet{fill:#6f6390;filter:none}
+.ob-body.pc .ob-planet{fill:#8f7dff}
+.ob-body.bc .ob-planet{fill:#4fd1a1}
+.ob-extring{fill:none;stroke:var(--c-call);stroke-dasharray:1.5 1.5;vector-effect:non-scaling-stroke;stroke-width:1.2}
+.ob-svcstar{fill:#e9f3ff;filter:drop-shadow(0 0 2px #9fd0ff);animation:obTw var(--tw) ease-in-out infinite}
+.ob-body:hover .ob-planet,.ob-body:hover .ob-svcstar{filter:drop-shadow(0 0 4px #fff)}
+.ob-body.sel .ob-planet,.ob-body.sel .ob-svcstar{stroke:#fff;stroke-width:2;vector-effect:non-scaling-stroke}
+.ob-blabel{font-size:calc(var(--k) * 10.5px);fill:#dfe6f3;paint-order:stroke;stroke:rgba(4,6,13,.9);stroke-width:calc(var(--k) * 3px);pointer-events:none}
+.ob-bsub{font-size:calc(var(--k) * 9px);fill:var(--tm)}
+.ob-more{font-size:calc(var(--k) * 10px);fill:var(--tm)}
+.ob-portal{cursor:pointer;animation:obFade .6s ease both;animation-delay:var(--d)}
+.ob-pline{stroke:var(--kc);stroke-width:1.2;stroke-opacity:.55;stroke-dasharray:4 4;animation:obFlow 1.2s linear infinite}
+.ob-pline.in{animation-name:obFlowIn}
+.ob-pfar{stroke:var(--kc);stroke-opacity:.1;stroke-width:1}
+.ob-pring{stroke:var(--kc);stroke-width:1.2;vector-effect:non-scaling-stroke}
+.ob-pswirl{fill:none;stroke:var(--kc);stroke-opacity:.7;stroke-dasharray:3 2;vector-effect:non-scaling-stroke;animation:obSpin 6s linear infinite}
+.ob-portal:hover .ob-pswirl{stroke-opacity:1;stroke-width:2}
+.ob-portal:hover .ob-pline{stroke-opacity:1}
+.ob-plabel{font-size:calc(var(--k) * 10.5px);fill:#dfe6f3;font-family:var(--mono);paint-order:stroke;stroke:rgba(4,6,13,.9);stroke-width:calc(var(--k) * 3px)}
+.ob-ptsub{font-family:var(--sans);font-size:calc(var(--k) * 9px);fill:var(--tm)}
+.ob-portal:hover .ob-plabel{fill:#fff}
+
+/* HUD */
+.ob-top{position:absolute;top:12px;left:12px;right:12px;display:flex;gap:10px;align-items:flex-start;pointer-events:none;z-index:3}
+.ob-top>*{pointer-events:auto}
+.ob-crumbs{display:flex;align-items:center;gap:2px;background:var(--glass);backdrop-filter:blur(8px);border:1px solid var(--gline);border-radius:12px;padding:4px;box-shadow:0 10px 30px rgba(0,0,0,.35)}
+.ob-crumbs button{border:0;background:transparent;color:var(--tm);font-weight:650;font-size:12.5px;padding:6px 10px;border-radius:8px;cursor:pointer;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ob-crumbs button:hover{color:#fff;background:rgba(255,255,255,.06)}
+.ob-crumbs button.on{color:#fff}
+.ob-crumbs i{color:#56617a;font-style:normal}
+.ob-crumbs .ob-back{margin-left:6px;background:rgba(242,106,33,.16);color:#ffb27f}
+.ob-search{position:relative;width:300px}
+.ob-search input{width:100%;background:var(--glass);backdrop-filter:blur(8px);border:1px solid var(--gline);color:var(--tx);border-radius:12px;padding:9px 12px;font-size:12.5px;outline:none}
+.ob-search input:focus{border-color:#ff8a3c;box-shadow:0 0 0 3px rgba(255,138,60,.18)}
+.ob-hits{position:absolute;top:calc(100% + 6px);left:0;right:0;background:rgba(10,14,26,.95);border:1px solid var(--gline);border-radius:12px;padding:4px;animation:obDrop .18s ease both;max-height:60vh;overflow:auto}
+.ob-hits button{display:flex;flex-direction:column;align-items:flex-start;width:100%;border:0;background:transparent;color:var(--tx);padding:6px 10px;border-radius:8px;cursor:pointer;text-align:left}
+.ob-hits button:hover{background:rgba(255,255,255,.07)}
+.ob-hits b{font-size:12.5px;font-family:var(--mono)}.ob-hits span{font-size:11px;color:var(--tm)}
+.ob-scan{position:absolute;top:64px;left:12px;display:flex;align-items:center;gap:10px;background:var(--glass);border:1px solid var(--gline);border-radius:20px;padding:5px 12px 5px 6px;font-size:12px;color:var(--tm);z-index:3;animation:obDrop .3s ease both}
+.ob-scanring{width:20px;height:20px;border-radius:50%;background:conic-gradient(#ff8a3c calc(var(--p) * 360deg),rgba(255,255,255,.1) 0);-webkit-mask:radial-gradient(circle 6px,transparent 98%,#000 100%);mask:radial-gradient(circle 6px,transparent 98%,#000 100%)}
+.ob-legend{position:absolute;left:12px;bottom:12px;display:flex;flex-wrap:wrap;gap:6px;z-index:3;max-width:calc(100% - 420px)}
+.ob-legend button{display:inline-flex;align-items:center;gap:7px;background:var(--glass);backdrop-filter:blur(8px);border:1px solid var(--gline);color:var(--tm);border-radius:20px;padding:5px 11px;font-size:11.5px;font-weight:650;cursor:pointer;transition:all .15s}
+.ob-legend button i{width:16px;height:3px;border-radius:2px;background:var(--kc,#8a94a8);opacity:.35}
+.ob-legend button.opt i{width:9px;height:9px;border-radius:50%;background:#8a94a8}
+.ob-legend button.on{color:#fff;border-color:rgba(255,255,255,.22)}
+.ob-legend button.on i{opacity:1;box-shadow:0 0 8px var(--kc,#ff8a3c)}
+.ob-legend button.opt.on i{background:#ff8a3c}
+.ob-hint{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);font-size:11.5px;color:#6f7b93;pointer-events:none;z-index:2;white-space:nowrap}
+.ob-mini{position:absolute;left:12px;bottom:52px;width:200px;height:120px;background:rgba(6,9,18,.75);border:1px solid var(--gline);border-radius:10px;z-index:3;cursor:pointer}
+.ob-minicam{fill:rgba(255,138,60,.08);stroke:#ff8a3c;stroke-width:1.2}
+.ob-panel{position:absolute;top:64px;right:12px;bottom:12px;width:340px;overflow:auto;background:var(--glass);backdrop-filter:blur(10px);border:1px solid var(--gline);border-radius:14px;padding:14px 16px;z-index:3;animation:obIn .35s ease both;box-shadow:0 10px 40px rgba(0,0,0,.45)}
+.ob-panel::-webkit-scrollbar{width:8px}.ob-panel::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12);border-radius:8px}
+.ob-pclose{position:absolute;top:8px;right:10px;border:0;background:transparent;color:var(--tm);font-size:18px;cursor:pointer}
+.ob-popen{position:absolute;top:64px;right:12px;z-index:3;background:var(--glass);border:1px solid var(--gline);color:var(--tx);border-radius:10px;padding:7px 12px;cursor:pointer;font-weight:650}
+.ob-pkick{font-size:10.5px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:#ffb27f}
+.ob-panel h3{margin:4px 0 2px;font-size:18px;color:#fff;word-break:break-all}
+.ob-psub{font-size:11.5px;color:var(--tm);word-break:break-word}
+.ob-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:12px 0 6px}
+.ob-stats div{background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-top:2px solid var(--kc,rgba(255,255,255,.2));border-radius:9px;padding:6px 8px;display:flex;flex-direction:column}
+.ob-stats b{font-size:15px;color:#fff;font-variant-numeric:tabular-nums}
+.ob-stats span{font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--tm)}
+.ob-psec{font-size:10.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--tm);margin:14px 0 4px;padding-top:10px;border-top:1px solid rgba(255,255,255,.07)}
+.ob-row{display:grid;grid-template-columns:10px minmax(0,1fr);column-gap:8px;align-items:center;width:100%;border:0;background:transparent;color:var(--tx);padding:5px 6px;border-radius:8px;cursor:pointer;text-align:left}
+.ob-row:hover{background:rgba(255,255,255,.07)}
+.ob-row i{width:8px;height:8px;border-radius:50%;background:var(--kc,#8a94a8);grid-row:span 2;align-self:start;margin-top:5px}
+.ob-row b{font-size:12.5px;font-family:var(--mono);font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ob-row span{font-size:11px;color:var(--tm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;grid-column:2}
+.ob-row i.ob-mix{background:conic-gradient(var(--c-nav) 0 33%,var(--c-comp) 0 66%,var(--c-call) 0)}
+.ob-dot.ctrl{background:#ffb15c}.ob-dot.comp{background:#b48cff}
+.ob-kinds{display:flex;gap:6px}
+.ob-kinds em{font-style:normal;color:var(--kc);font-weight:700}
+.ob-note{font-size:11.5px;color:var(--tm);background:rgba(255,255,255,.04);border-radius:8px;padding:7px 9px;margin-top:8px;line-height:1.45}
+.ob-card{position:relative;margin:10px 0 4px;background:rgba(255,138,60,.07);border:1px solid rgba(255,138,60,.3);border-radius:11px;padding:10px 12px;animation:obDrop .25s ease both}
+.ob-card h4{margin:0 0 6px;font-size:13.5px;color:#fff;font-family:var(--mono)}
+.ob-bc{font-size:11.5px;color:var(--tm);display:flex;flex-direction:column;gap:3px;margin-bottom:6px;word-break:break-all}
+.ob-fn{display:flex;flex-direction:column;padding:4px 0;border-top:1px dashed rgba(255,255,255,.08);font-size:11.5px}
+.ob-fn b{color:#fff}.ob-fn span{color:var(--tm)}
+.ob-fn .ob-leads{color:#bfe6ff}.ob-fn .ob-miss{color:#ff8a80}
+.ob-link{border:0;background:transparent;color:#ffb27f;cursor:pointer;padding:0;text-align:left;font-weight:650}
+
+/* star catalogue */
+.ob-cat .searchbar{margin-bottom:8px}
+.ob-table{width:100%;border-collapse:collapse;font-size:12.5px;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.ob-table th{position:sticky;top:0;background:var(--bg);text-align:left;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);cursor:pointer;white-space:nowrap;border-bottom:1px solid var(--line)}
+.ob-table th.on{color:var(--accent)}
+.ob-table td{padding:7px 10px;border-bottom:1px solid var(--line)}
+.ob-table tbody tr{cursor:pointer;transition:background .12s}
+.ob-table tbody tr:hover td{background:var(--accent-soft)}
+.ob-table td.k-nav{color:#2f8fd0;font-weight:700}.ob-table td.k-call{color:#d4772a;font-weight:700}.ob-table td.k-comp{color:#8a5cc2;font-weight:700}
+@media (max-width:1100px){.ob-panel{width:290px}.ob-search{width:220px}.ob-mini{display:none}.ob-legend{max-width:calc(100% - 330px)}}
+@media (prefers-reduced-motion:reduce){.ob *{animation-duration:.01ms!important}}
+/* the sky stays readable: form counts and form-less modules name themselves on hover */
+.lvl-sky .ob-gal:not(:hover) .ob-gsub{opacity:0}
+.ob-qlabel{transition:opacity .2s}
+.ob-qsr:not(:hover):not(.focus) .ob-qlabel{opacity:0}
+.ob-glabel{font-size:calc(var(--k) * 13px)}
+.ob-gal:hover .ob-glabel{fill:#fff;font-size:calc(var(--k) * 15px)}
+.ob-glabel.culled,.ob-slabel.culled{opacity:0!important;pointer-events:none}
+.ob-gal:hover .ob-glabel.culled,.ob-sys:hover .ob-slabel.culled{opacity:1!important}
+.ob-glabel,.ob-slabel{transition:opacity .25s}
+/* landed: the rest of the galaxy steps back to pinpoints */
+.lvl-system .ob-gal.focus .ob-arms{opacity:.07}
+.lvl-system .ob-sys:not(.here) .ob-star{r:calc(var(--k) * 2.4px);opacity:.55;animation:none}
+.lvl-system .ob-gal.focus .ob-halo{opacity:.2}
+.lvl-system .ob-core{opacity:.06;animation:none}
+.lvl-system .ob-sys:not(.here) .ob-shit{r:calc(var(--k) * 9px)}
+.lvl-system .ob-gal:not(.focus) .ob-halo{opacity:.25}

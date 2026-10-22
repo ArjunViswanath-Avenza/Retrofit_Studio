@@ -303,8 +303,11 @@ function recvKind(cls, idx, sc, n, noClassVars) {
       if (base && base.kind === "appmgr") { const g = last.call.slice(3); return g === "NavigationManager" ? { kind: "navmgr" } : { kind: "bc", module: idx.managers[g] || null, getter: g, how: `applicationManager.${last.call}()` }; }
     }
     if (last.call === "getModule") {
-      const m = a0 || (last.args[0] && last.args[0].type === "ObjectExpression" ? (objKeys(last.args[0]).find((k) => k.key === "moduleName") || {}).value : null);
-      return m ? { kind: "module", module: m, how: `getModule("${m}")` } : { kind: "unknown", why: "module name is not written in the code" };
+      // micro apps name the app too: getModule({ moduleName: "AuthUIModule", appName: "AuthenticationMA" })
+      const ok = last.args[0] && last.args[0].type === "ObjectExpression" ? objKeys(last.args[0]) : [];
+      const m = a0 || (ok.find((k) => k.key === "moduleName") || {}).value || null;
+      const app = (ok.find((k) => k.key === "appName") || {}).value || null;
+      return m ? { kind: "module", module: m, app, how: `getModule("${m}"${app ? `, app ${app}` : ""})` } : { kind: "unknown", why: "module name is not written in the code" };
     }
     if (last.call === "getRepository" || last.call === "getModelDefinition") return a0 ? { kind: "repo", obj: a0, how: `${last.call}("${a0}")` } : { kind: "unknown", why: "object name is not written in the code" };
     if (last.call === "getIntegrationService" || last.call === "getObjectService") return { kind: "service", svc: a0 || "(named at run time)" };
@@ -316,7 +319,7 @@ function recvKind(cls, idx, sc, n, noClassVars) {
   }
   if (last.name === "presentationController" || last.name === "businessController") {
     const base = recvKind(cls, idx, sc, n.object, noClassVars);
-    if (base && base.kind === "module") return { kind: last.name === "presentationController" ? "pc" : "bc", module: base.module, how: base.how + "." + last.name };
+    if (base && base.kind === "module") return { kind: last.name === "presentationController" ? "pc" : "bc", module: base.module, app: base.app || null, how: base.how + "." + last.name };
     if (base && base.kind === "self" && last.name === "businessController" && cls.kind !== "controller") return { kind: "bc", module: cls.module, how: "this.businessController" };
     return null;
   }
@@ -360,7 +363,12 @@ export function analyzeFn(cls, idx, member, fnNode, outer) {
     const callee = c.callee;
     if (c.type === "NewExpression") {
       const ch = chain(callee).map((s) => s.name || s.id).join(".");
-      if (/(^|\.)mvc\.Navigation$/.test(ch)) { const f = strArg(c.arguments[0]); at(c, conds, { type: "nav", form: f ? f.split("/").pop() : null, how: "new kony.mvc.Navigation()" }); }
+      if (/(^|\.)mvc\.Navigation$/.test(ch)) {
+        // new kony.mvc.Navigation("frmX") or, in micro apps, ({ appName: "AuthenticationMA", friendlyName: "AuthUIModule/frmLogin" })
+        const ok = c.arguments[0] && c.arguments[0].type === "ObjectExpression" ? objKeys(c.arguments[0]) : [];
+        const f = strArg(c.arguments[0]) || (ok.find((k) => k.key === "friendlyName") || {}).value || null, app = (ok.find((k) => k.key === "appName") || {}).value || null;
+        at(c, conds, { type: "nav", form: f ? f.split("/").pop() : null, app, how: "new kony.mvc.Navigation()" });
+      }
       return null;
     }
     if (callee.type === "Identifier") {
@@ -396,12 +404,16 @@ export function analyzeFn(cls, idx, member, fnNode, outer) {
         if (prop === "presentUserInterface") { const f = strArg(c.arguments[0]); at(c, conds, { type: "present", form: f ? f.split("/").pop() : null, keys: objKeys(c.arguments[1]) }); return true; }
         if (cls.kind === "controller" && idx.protoFns && idx.protoFns.has(prop)) { const pf = idx.protoFns.get(prop); at(c, conds, { type: "framework", what: `this.${prop}()`, owner: pf.owner, rel: pf.rel, defLine: pf.line }); return true; }
         at(c, conds, { type: "unresolved", what: `this.${prop}()`, why: "not a function of this class (framework or inherited)" }); return true;
-      case "pc": at(c, conds, { type: "pc", module: r.module, fn: prop, how: r.how, callbacks: cbs }); return true;
+      case "pc": at(c, conds, { type: "pc", module: r.module, app: r.app || null, fn: prop, how: r.how, callbacks: cbs }); return true;
       case "bc": if (!r.module) { at(c, conds, { type: "unresolved", what: `${r.getter}.${prop}()`, why: `${r.getter} is not listed in ApplicationManager` }); return true; }
-        at(c, conds, { type: "bc", module: r.module, fn: prop, how: r.how, callbacks: cbs }); return true;
+        at(c, conds, { type: "bc", module: r.module, app: r.app || null, fn: prop, how: r.how, callbacks: cbs }); return true;
       case "navmgr": {
         const a0 = c.arguments[0], a1 = c.arguments[1];
-        if (prop === "navigateTo") { const f = strArg(a0) || (a0 && a0.type === "ObjectExpression" ? (objKeys(a0).find((k) => k.key === "friendlyName") || {}).value : null); at(c, conds, { type: "nav", form: f ? f.split("/").pop() : null, formExpr: f ? null : a0 ? srcOf(cls, rel, a0).replace(/\s+/g, " ").slice(0, 80) : "", how: "navigationManager.navigateTo" }); return true; }
+        if (prop === "navigateTo") {
+          const ok = a0 && a0.type === "ObjectExpression" ? objKeys(a0) : [];
+          const f = strArg(a0) || (ok.find((k) => k.key === "friendlyName") || {}).value || null, app = (ok.find((k) => k.key === "appName") || {}).value || null;
+          at(c, conds, { type: "nav", form: f ? f.split("/").pop() : null, app, formExpr: f ? null : a0 ? srcOf(cls, rel, a0).replace(/\s+/g, " ").slice(0, 80) : "", how: "navigationManager.navigateTo" }); return true;
+        }
         if (prop === "updateForm") { at(c, conds, { type: "updateForm", form: strArg(a1) ? strArg(a1).split("/").pop() : null, keys: objKeys(a0), dataText: a0 ? srcOf(cls, rel, a0).replace(/\s+/g, " ").slice(0, 140) : "" }); return true; }
         if (prop === "setCustomInfo" || prop === "getCustomInfo") { at(c, conds, { type: prop === "setCustomInfo" ? "infoSet" : "infoGet", key: strArg(a0) }); return true; }
         at(c, conds, { type: "bc", module: idx.managers.NavigationManager || "NavigationManager", fn: prop, how: "navigation manager", callbacks: cbs }); return true;

@@ -22,6 +22,8 @@ import { VisualizeUpload, PlanBar, FlowView, AppsView, ModulesView, ReviewView, 
 import { FormAtlas } from "./components/FormAtlas";
 import { BlueprintUpload, BlueprintHome, BlueprintModule, BlueprintForm, BlueprintFlow, BP_MENU } from "./components/Blueprint";
 import { ProjectLocator } from "./components/Locator";
+import { ObservatoryUpload, ObservatoryWorkspace, OB_MENU } from "./components/Observatory";
+import { readSky, universe as obUniverse } from "./lib/observatory";
 import { loadProject as bpLoad, buildIndex as bpIndex, clsLabel as bpClsLabel } from "./lib/blueprint";
 import { loadNames, saveNames, validate, clean } from "./lib/names";
 
@@ -51,6 +53,11 @@ const WORKSPACES = {
     title: "Blueprint", sub: "A monolith, part by part", ico: "⌗", short: "Blueprint",
     desc: () => "Upload one monolith (Online Banking or Mobile Banking) and see it laid out as modules → forms, controllers, presentation and business code. Open a form for its screen, every user action, the data in and out, and a code flow breakdown that follows one action to the model and back, with the code at every step.",
     covers: ["Project blueprint · every module", "Form · screen, actions, data in & out", "Code flow · sequence diagram & call tree", "Code line at every step"],
+  },
+  observatory: {
+    title: "Observatory", sub: "The whole project as a sky", ico: "✦", short: "Observatory",
+    desc: () => "Upload a monolith or a micro-app project and fly through it: every module (or micro app) is a galaxy, every form a solar system with its controller, components and the code it calls in orbit — and every navigation, shared component and cross-module call drawn between them.",
+    covers: ["Sky · galaxies & connections", "Galaxy · its solar systems", "Solar system · controller, components, PC / BC, services", "Star catalogue"],
   },
   convert: {
     title: "Converter", sub: "Monolith to micro app", ico: "⇢", short: "Converter",
@@ -188,6 +195,12 @@ export default function App() {
   const [bpCh, setBpCh] = useState(null);
   const [bpIdx, setBpIdx] = useState(null);
   const [bpBusy, setBpBusy] = useState(false);
+  // Observatory: one monolith or micro-app project as a sky
+  const [obPick, setObPick] = useState(null);
+  const [obCh, setObCh] = useState(null);
+  const [obU, setObU] = useState(null);
+  const [obBusy, setObBusy] = useState(false);
+  const [obNav, setObNav] = useState("ob-sky");
   const [bpNav, setBpNav] = useState("bp-home");
   const [bpModule, setBpModule] = useState(null);
   const [bpForm, setBpForm] = useState(null);
@@ -196,7 +209,7 @@ export default function App() {
   const [bpExternal, setBpExternal] = useState(null);
   const bpCache = useMemo(() => new Map(), [bpIdx]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const entered = { ui: uiEntered, ma: !!maAligned, visualize: vzEntered && !!vzPlan, blueprint: !!bpIdx, convert: !!cvPlan, fabric: fabEntered };
+  const entered = { ui: uiEntered, ma: !!maAligned, visualize: vzEntered && !!vzPlan, blueprint: !!bpIdx, observatory: !!obU, convert: !!cvPlan, fabric: fabEntered };
   const uiReady = picked[0] && picked[1] && !validate(names.ui);
   const fabReady = fab.filter(Boolean).length >= 2 && !validate(names.fabric);
   // pairs that can be compared; the customised · new release pair first (what a 2-export comparison shows)
@@ -255,6 +268,17 @@ export default function App() {
     const chans = Object.keys(p.channels);
     setBpCh(chans.includes("desktop") ? "desktop" : chans.includes("mobile") ? "mobile" : chans[0] || null);
   };
+  const onObFolder = (fileList) => {
+    const p = readSky(fileList);
+    setObPick(p);
+    const chans = Object.keys(p.channels);
+    setObCh(chans.includes("desktop") ? "desktop" : chans.includes("mobile") ? "mobile" : chans[0] || null);
+  };
+  const openOb = async () => {
+    setObBusy(true);
+    const U = await obUniverse(obPick, obCh);
+    setObU(U); setObNav("ob-sky"); setObBusy(false);
+  };
   const openBp = async () => {
     setBpBusy(true);
     const idx = await bpIndex(bpPick, bpCh);
@@ -298,6 +322,7 @@ export default function App() {
     ui: () => { setUiEntered(false); setPicked([null, null, null]); setUiNav("home"); },
     ma: () => { setMaAligned(null); setMaPick([null, null, null]); setMaAligning(null); setMaNav("home"); },
     blueprint: () => { setBpIdx(null); setBpPick(null); setBpCh(null); setBpNav("bp-home"); setBpModule(null); setBpForm(null); setBpEntry(null); setBpExternal(null); },
+    observatory: () => { setObU(null); setObPick(null); setObCh(null); setObNav("ob-sky"); },
     visualize: () => { setVzEntered(false); setVzPick(null); setVzPolicy(POLICY_DEFAULT); setVzOverrides({}); setVzOpen(null); setVzSel(null); setVzNav("vz-flow"); },
     convert: () => { setCvPlan(null); setCvPick([null, null]); setCvPlanning(null); setCvRun(null); setCvNav("cv-plan"); },
     fabric: () => { setFabEntered(false); setFab([null, null, null]); setFabBulk({}); setFabAnalyzing({}); setFabPair(null); setFabSel(null); setJarFocus(null); resetDecompile(); setFabNav("fab-overview"); },
@@ -306,6 +331,7 @@ export default function App() {
     ui: uiEntered ? `Loaded · ${L.ui.filter((m, i) => picked[i]).join(" · ")}` : picked.some(Boolean) ? `${picked.filter(Boolean).length}/3 projects picked` : "Not loaded yet",
     visualize: vzEntered && vzPlan ? `${vzPick.name} · ${vzPlan.stats.forms} forms → ${vzPlan.stats.apps} micro apps${vzAgreed ? " · agreed" : ""}` : vzPick ? `${vzPick.name} picked` : "Not loaded yet",
     blueprint: bpIdx ? `${bpIdx.project.name} · ${bpIdx.modules.size} modules · ${bpIdx.forms.size} forms` : bpPick ? `${bpPick.name} picked` : "Not loaded yet",
+    observatory: obU ? `${obU.name} · ${obU.galaxies.filter((g) => g.systems.length).length} galaxies · ${obU.systems.length} forms` : obPick ? `${obPick.name} picked` : "Not loaded yet",
     convert: cvPlan ? `Plan ready · ${cvPlan.rows.length} modules` : cvPick.some(Boolean) ? `${cvPick.filter(Boolean).length}/2 folders picked` : "Not loaded yet",
     ma: maAligned ? `Loaded · ${CHANNELS[maAligned.channel].label}` : maPick.some(Boolean) ? `${maPick.filter(Boolean).length}/3 folders picked` : "Not loaded yet",
     fabric: fabEntered ? `Loaded · ${L.fabric.filter((x, i) => fab[i]).join(" · ")}` : fab.some(Boolean) ? `${fab.filter(Boolean).length}/3 exports picked` : "Not loaded yet",
@@ -328,13 +354,13 @@ export default function App() {
           </div>
         )}
         <div className="rt">
-          {mode && entered[mode] && !["convert", "visualize", "blueprint"].includes(mode) && <button className="pillbtn" onClick={() => setNamesOpen((v) => !v)}>✎ Version names</button>}
+          {mode && entered[mode] && !["convert", "visualize", "blueprint", "observatory"].includes(mode) && <button className="pillbtn" onClick={() => setNamesOpen((v) => !v)}>✎ Version names</button>}
           {mode && <button className="pillbtn" onClick={() => setMode(null)}>⌂ Workspaces</button>}
           {mode && entered[mode] && <button className="pillbtn" onClick={reset[mode]}>New project</button>}
         </div>
       </div>
 
-      {namesOpen && mode && entered[mode] && !["convert", "visualize", "blueprint"].includes(mode) && (
+      {namesOpen && mode && entered[mode] && !["convert", "visualize", "blueprint", "observatory"].includes(mode) && (
         <VersionNamesPanel key={mode} ws={mode} value={names[mode]} onClose={() => setNamesOpen(false)}
           onApply={(list) => { setNamesFor(mode, list); if (mode === "fabric") { setFabBulk({}); setFabAnalyzing({}); } }} />
       )}
@@ -359,6 +385,7 @@ export default function App() {
             <VisualizeUpload channel={vzChannel} setChannel={setVzChannel} pick={vzPick && { ...vzPick, inv: vzInv }} onFolder={onVzFolder}
               go={() => { setVzEntered(true); setVzNav("vz-flow"); }} />
           )}
+          {mode === "observatory" && <ObservatoryUpload pick={obPick} onFolder={onObFolder} ch={obCh} setCh={setObCh} go={openOb} busy={obBusy} />}
           {mode === "blueprint" && <BlueprintUpload pick={bpPick} onFolder={onBpFolder} ch={bpCh} setCh={setBpCh} go={openBp} busy={bpBusy} />}
           {mode === "convert" && (
             <ConverterUpload channel={cvChannel} setChannel={setCvChannel} pick={cvPick} onFolder={onCvFolder}
@@ -415,6 +442,11 @@ export default function App() {
           {bpNav === "bp-form" && <BlueprintForm idx={bpIdx} formKey={bpForm} setForm={bpOpenForm} tab={bpTab} setTab={setBpTab} openFlow={bpOpenFlow} cache={bpCache} />}
           {bpNav === "bp-locate" && <ProjectLocator idx={bpIdx} cache={bpCache} openFormTab={(k) => bpOpenFormTab(k, "where")} openFormFlow={bpOpenFormFlow} />}
           {bpNav === "bp-flow" && <BlueprintFlow idx={bpIdx} formKey={bpExternal ? null : bpForm} setForm={(k) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpEntry(null); }} entryId={bpEntry} setEntry={setBpEntry} cache={bpCache} external={bpExternal} />}
+        </Shell>
+      )}
+      {obU && (
+        <Shell {...shellProps("observatory", obNav, setObNav, OB_MENU, `${obU.name} · ${obU.ch}`)}>
+          <ObservatoryWorkspace U={obU} nav={obNav} setNav={setObNav} />
         </Shell>
       )}
       {cvPlan && (
