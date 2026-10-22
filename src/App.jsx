@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import "./App.css";
 import { extractComponent, extractModule, buildModel, mvcKind } from "./lib/analyzer";
 import { TwoCol, ThreeCol } from "./components/DiffView";
@@ -7,6 +7,8 @@ import { FormsView } from "./components/Forms";
 import { OverallView } from "./components/Overall";
 import { ComponentsView } from "./components/Components";
 import { analyzeComponents } from "./lib/components";
+import { SegmentsView } from "./components/Segments";
+import { analyzeSegments, segmentUsage, segmentFiles } from "./lib/segments";
 import { scanFolder } from "./lib/scan";
 import { MicroAppUpload, MicroAppMap } from "./components/MicroApps";
 import { scanMicroApps, alignMicroApps, missingMicroApps, channelScan, CHANNELS } from "./lib/microapps";
@@ -91,7 +93,12 @@ const uiMenu = (L) => [
   },
 ];
 
-const maMenu = (L) => [{ id: "home", ico: "❖", label: "Micro-app map", desc: `Where monolith items live in ${L[2]}` }, ...uiMenu(L).slice(1)];
+const maMenu = (L) => [{ id: "home", ico: "❖", label: "Micro-app map", desc: `Where monolith items live in ${L[2]}` }, ...uiMenu(L).slice(1),
+  {
+    id: "segs", ico: "☷", label: "TemplateTwin", desc: "Segment templates",
+    items: [{ id: "segs", label: "Segment comparison", ready: true }, { id: "segs-all", label: "Overall comparison", ready: true }],
+  },
+];
 
 const CV_MENU = [
   { id: "cv-plan", ico: "▦", label: "Conversion plan", desc: "Monolith module → micro app" },
@@ -219,6 +226,7 @@ export default function App() {
   const fabAll = fab.every(Boolean);
   const fabRetro = useMemo(() => (fabAll && fabBulk["01"] && fabBulk["02"] && fabBulk["12"] ? fabricRetrofit(fabBulk["01"], fabBulk["02"], fabBulk["12"]) : null), [fabAll, fabBulk]);
   const maReady = maPick[0] && maPick[1] && maPick[2] && !validate(names.ma);
+  const maSegReport = useMemo(() => (maAligned && maAligned.report.segs ? new Map(maAligned.report.segs.map((r) => [r.key, r])) : null), [maAligned]);
 
   const onFolder = (i, fileList) => {
     const scan = scanFolder(fileList);
@@ -408,6 +416,7 @@ export default function App() {
       {maAligned && (
         <Shell {...shellProps("ma", maNav, setMaNav, maMenu(L.ma), `${CHANNELS[maAligned.channel].label} · ${maAligned.picked[2].microApps} ${L.ma[2]} projects`)}>
           <VisualizerWorkspace key={L.ma.join("|")} picked={maAligned.picked} labels={L.ma} nav={maNav} setNav={setMaNav} active={mode === "ma"}
+            segReport={maSegReport}
             home={<MicroAppMap aligned={maAligned} goto={setMaNav} labels={L.ma} />} />
         </Shell>
       )}
@@ -487,7 +496,7 @@ function Shell({ hidden, side, nav, setNav, openGroups, setOpenGroups, menu, wor
 
 // One Visualizer comparison (R21 · KBZ · R26) with its own analysis state. Used twice: monolith-to-monolith and
 // monolith-to-micro-app (where picked[2] is R26 re-keyed onto the monolith's names by the micro-app map).
-function VisualizerWorkspace({ picked, labels, nav, setNav, active, home }) {
+function VisualizerWorkspace({ picked, labels, nav, setNav, active, home, segReport }) {
   const [bulk, setBulk] = useState(null);
   const [analyzing, setAnalyzing] = useState(null);
   const [formScan, setFormScan] = useState({}); // per version-pair form property scan (kept across menu navigation)
@@ -500,6 +509,13 @@ function VisualizerWorkspace({ picked, labels, nav, setNav, active, home }) {
   const [compAnalyzing, setCompAnalyzing] = useState(null);
   const [compDrill, setCompDrill] = useState(null);
   const [compAspect, setCompAspect] = useState("structure");
+  const [segBulk, setSegBulk] = useState(null);
+  const [segAnalyzing, setSegAnalyzing] = useState(null);
+  const [segDrill, setSegDrill] = useState(null);
+  const [segAspect, setSegAspect] = useState("structure");
+  const [segPicked, setSegPicked] = useState(null); // per version: { segs: template -> its files } for the Overall comparison
+  const [segUsage, setSegUsage] = useState(null);
+  const [segUsageProg, setSegUsageProg] = useState(null);
   const [tab, setTab] = useState("overview");
   const [member, setMember] = useState(null);
   const [view, setView] = useState("OLD_CUST");
@@ -515,6 +531,16 @@ function VisualizerWorkspace({ picked, labels, nav, setNav, active, home }) {
       (k) => ({ base: k.split("/")[0], kind: mvcKind(k) }), setMvcAnalyzing, labels);
     setMvcBulk({ results, unmatched: [] });
   };
+  // segment templates: the comparison first, then (in the background) the files for side by side and where each is used
+  const segFilesOnce = useRef(null);
+  const loadSegFiles = () => { if (!segFilesOnce.current) segFilesOnce.current = segmentFiles(picked).then((x) => { setSegPicked(x); return x; }); return segFilesOnce.current; };
+  const runSegs = async () => {
+    const results = await analyzeSegments(picked, labels.filter((l, i) => i < 2 || picked[2]), setSegAnalyzing);
+    setSegBulk({ results });
+    loadSegFiles();
+    setSegUsageProg({ done: 0, total: 1, running: true });
+    setSegUsage(await segmentUsage(picked, setSegUsageProg));
+  };
   const runComps = async () => {
     const results = await analyzeComponents(picked.map((p) => (p ? p.comps : null)), labels, setCompAnalyzing);
     setCompBulk({ results });
@@ -526,6 +552,8 @@ function VisualizerWorkspace({ picked, labels, nav, setNav, active, home }) {
     if (nav === "controllers" && !bulk && !(analyzing && analyzing.running)) runControllers();
     if (nav === "mvc" && !mvcBulk && !(mvcAnalyzing && mvcAnalyzing.running)) runMvc();
     if (nav === "comps" && !compBulk && !(compAnalyzing && compAnalyzing.running)) runComps();
+    if (nav === "segs" && !segBulk && !(segAnalyzing && segAnalyzing.running)) runSegs();
+    if (nav === "segs-all") loadSegFiles();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nav, active]);
 
@@ -544,6 +572,15 @@ function VisualizerWorkspace({ picked, labels, nav, setNav, active, home }) {
       {nav === "controllers-all" && <OverallView key="controllers" cat="controllers" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
       {nav === "mvc-all" && <OverallView key="mvc" cat="mvc" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
       {nav === "comps-all" && <OverallView key="comps" cat="comps" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
+      {nav === "segs-all" && (segPicked ? <OverallView key="segs" cat="segs" picked={segPicked} labels={labels} cache={overall} setCache={setOverall} />
+        : <div><h2 className="page">Segment templates · Overall comparison</h2><p className="note">Collecting every template's files and its controller…</p></div>)}
+      {nav === "segs" && (
+        <SegmentsView picked={picked} labels={labels.filter((l, i) => i < 2 || picked[2])} bulk={segBulk} analyzing={segAnalyzing}
+          drill={segDrill} setDrill={(i) => { setSegDrill(i); if (i != null) { setSegAspect("structure"); setTab("overview"); setView("OLD_CUST"); setMember(null); } }}
+          aspect={segAspect} setAspect={(k) => { setSegAspect(k); setMember(null); }} overall={overall} setOverall={setOverall}
+          report={segReport} usage={segUsage} usageProg={segUsageProg} segPicked={segPicked}
+          renderReport={(model) => <Report model={model} {...reportProps} widgets={false} />} />
+      )}
       {nav === "comps" && (
         <ComponentsView picked={picked} labels={labels.filter((l, i) => i < 2 || picked[2])} bulk={compBulk} analyzing={compAnalyzing}
           drill={compDrill} setDrill={(i) => (i == null ? setCompDrill(null) : openCompDrill(i))}

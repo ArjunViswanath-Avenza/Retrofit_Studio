@@ -90,7 +90,8 @@ export function channelScan(scan, channels) {
   if (!scan) return null;
   const keep = (m) => new Map([...m].filter(([k]) => channels.includes(k.split("/")[0])));
   const forms = keep(scan.forms), controllers = keep(scan.controllers);
-  return { ...scan, forms, controllers, counts: { ...scan.counts, forms: forms.size, controllers: controllers.size } };
+  const segs = keep(scan.segs || new Map()), tplCtrl = keep(scan.tplCtrl || new Map());
+  return { ...scan, forms, controllers, segs, tplCtrl, counts: { ...scan.counts, forms: forms.size, controllers: controllers.size, segments: segs.size } };
 }
 
 const parseFormKey = (k) => { const s = k.split("/"); return { ch: s[0], module: s.slice(1, -1).join("/"), name: s[s.length - 1].replace(/\.sm$/i, "") }; };
@@ -101,8 +102,10 @@ const parseCtrlKey = (k) => { const s = k.split("/"); return { ch: s[0], module:
 export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
   const C = CHANNELS[channel];
   const apps = [...ma.apps.values()];
-  const report = { channel, forms: [], controllers: [], mvc: [], comps: [], affinity: {} };
-  const out = { forms: new Map(), controllers: new Map(), mvc: new Map(), comps: new Map() };
+  const report = { channel, forms: [], controllers: [], mvc: [], comps: [], segs: [], affinity: {} };
+  // segMeta: where each aligned template really lives (micro app, its own name, that app's template controllers);
+  // formApp / ctrlApp / compApp: the micro app behind each aligned key
+  const out = { forms: new Map(), controllers: new Map(), mvc: new Map(), comps: new Map(), segs: new Map(), segMeta: new Map(), formApp: new Map(), ctrlApp: new Map(), compApp: new Map() };
   const ref = (cat, key) => (mono[0] && mono[0][cat].get(key)) || (mono[1] && mono[1][cat].get(key)) || null; // R21 first, else KBZ
   const inSide = (cat, key) => [!!(mono[0] && mono[0][cat].has(key)), !!(mono[1] && mono[1][cat].has(key))];
   const claimed = { forms: new Set(), controllers: new Set(), mvc: new Set(), comps: new Set() };
@@ -142,7 +145,7 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
       Object.assign(row, { status: clear ? "mapped" : "ambiguous", method: `${cands.length} candidates — widget overlap ${Math.round(best.score * 100)}%${best.aff ? `, module affinity ${best.aff}` : ""}`, target: best, alts: scored.slice(1).map((c) => `${c.app}:${c.module} (${Math.round(c.score * 100)}%)`) });
       if (!clear) row.target = best; // still compared, flagged for review
     }
-    if (row.target) { out.forms.set(k, row.target.map); claimed.forms.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.module, key: row.target.key }; }
+    if (row.target) { out.forms.set(k, row.target.map); out.formApp.set(k, row.target.app); claimed.forms.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.module, key: row.target.key }; }
     else { // where KBZ-only / unmatched forms would most likely live (module affinity)
       const best = Object.entries(aff[p.module] || {}).sort((x, y) => y[1] - x[1])[0];
       if (best) row.suggest = best[0];
@@ -153,6 +156,7 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
     const p = parseFormKey(k);
     if (!C.r26.includes(p.ch) || claimed.forms.has(loc(a.name, k))) continue;
     out.forms.set(`${p.ch}/${a.name}·${p.module}/${p.name}.sm`, m);
+    out.formApp.set(`${p.ch}/${a.name}·${p.module}/${p.name}.sm`, a.name);
   }
 
   // ---- controllers
@@ -185,13 +189,14 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
       const clear = identical || scored[0].score - scored[1].score >= 0.05;
       Object.assign(row, { status: clear ? "mapped" : "ambiguous", method: `${cands.length} candidates — text overlap ${Math.round(scored[0].score * 100)}%${identical ? " (identical copies)" : ""}`, target: scored[0], alts: scored.slice(1).map((c) => `${c.app}:${c.module || "(template)"} (${Math.round(c.score * 100)}%)`) });
     }
-    if (row.target) { out.controllers.set(k, row.target.f); claimed.controllers.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.module, key: row.target.key }; }
+    if (row.target) { out.controllers.set(k, row.target.f); out.ctrlApp.set(k, row.target.app); claimed.controllers.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.module, key: row.target.key }; }
     report.controllers.push(row);
   }
   for (const a of apps) for (const [k, f] of a.scan.controllers) {
     const p = parseCtrlKey(k);
     if (!C.r26.includes(p.ch) || claimed.controllers.has(loc(a.name, k))) continue;
     out.controllers.set(`${p.ch}/${a.name}·${p.module || "templates"}/${p.name}/${p.name}.js`, f);
+    out.ctrlApp.set(`${p.ch}/${a.name}·${p.module || "templates"}/${p.name}/${p.name}.js`, a.name);
   }
 
   // ---- mvc (presentation + business controllers)
@@ -283,26 +288,102 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
       const clear = identical || scored[0].score - scored[1].score >= 0.05;
       Object.assign(row, { status: clear ? "mapped" : "ambiguous", method: `${cands.length} candidates — widget overlap ${Math.round(scored[0].score * 100)}%${identical ? " (same structure in several micro apps)" : ""}`, target: scored[0], alts: scored.slice(1).map((c) => `${c.key} (${Math.round(c.score * 100)}%)`) });
     }
-    if (row.target) { out.comps.set(k, row.target.files); claimed.comps.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.key, key: row.target.key }; }
+    if (row.target) { out.comps.set(k, row.target.files); out.compApp.set(k, row.target.app); claimed.comps.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.key, key: row.target.key }; }
     report.comps.push(row);
   }
   for (const a of apps) for (const [k, files] of a.scan.comps) {
     if (claimed.comps.has(loc(a.name, k))) continue;
     if (/\.Infinity(OLB|MB)\./.test(k) && !C.family.test(k)) continue; // other channel's widgets
     out.comps.set(k, files);
+    out.compApp.set(k, a.name);
+  }
+
+  // ---- segment templates
+  // templates/<ch>/segments/<name>.sm; R26 keeps copies of one template in several micro apps (SampleRowTemplate is in
+  // nearly all of them). Same name -> the copy with the most similar widget-id set, the other copies listed beside it;
+  // no same name -> a template whose root flex has the monolith template's root flex name (renamed; its controller
+  // is named after the root flex, so it stays the same). R26 templates with no monolith counterpart are grouped by
+  // name the same way (one row, every copy listed).
+  onProgress({ step: "Matching segment templates", running: true });
+  const metaOf = async (map, name) => {
+    const f = map && map.get(name);
+    if (!f) return {};
+    try { const j = JSON.parse((await textOf(f)).replace(/^﻿/, "")); return { root: (j.children || [])[0] || null, kuid: j.kuid || null }; } catch { return {}; }
+  };
+  const r26Segs = new Map(); // ch|name -> [{app, key, name, ch, map, tplCtrl}]
+  const r26SegList = [];
+  for (const a of apps) for (const [k, m] of a.scan.segs || []) {
+    const [ch, name] = k.split("/");
+    if (!C.r26.includes(ch)) continue;
+    const c = { app: a.name, key: k, name, ch, map: m, tplCtrl: a.scan.tplCtrl };
+    r26SegList.push(c);
+    if (!r26Segs.has(`${ch}|${name}`)) r26Segs.set(`${ch}|${name}`, []);
+    r26Segs.get(`${ch}|${name}`).push(c);
+  }
+  let rootIdx = null; // ch|rootFlex -> [copy], read only when a name finds no match
+  const byRoot = async (ch, root) => {
+    if (!rootIdx) { rootIdx = new Map(); for (const c of r26SegList) { c.root = (await metaOf(c.map, c.name)).root; const id = `${c.ch}|${c.root}`; if (!rootIdx.has(id)) rootIdx.set(id, []); rootIdx.get(id).push(c); } }
+    return rootIdx.get(`${ch}|${root}`) || [];
+  };
+  const sharedApp = (c) => (/^(Resources\w*|Commons)MA$/.test(c.app) ? 1 : 0);
+  const segClaim = new Set(); // ch|name of R26 template names already shown on a monolith row
+  const place = (row, k, scored, how) => {
+    const best = scored[0];
+    const identical = scored.length > 1 && best.score >= 0.95 && scored[1].score >= 0.95;
+    const clear = scored.length === 1 || identical || best.score - scored[1].score >= 0.05;
+    Object.assign(row, {
+      status: row.status === "r26only" ? "r26only" : clear ? "mapped" : "ambiguous",
+      method: `${how}${scored.length > 1 ? ` · ${scored.length} copies` : ""}${best.score != null ? ` · widget overlap ${pct(best.score)}` : ""}${identical ? " (same structure in several micro apps)" : ""}`,
+      target: { app: best.app, name: best.name, key: best.key },
+      alts: scored.slice(1).map((c) => ({ app: c.app, name: c.name, score: c.score })),
+    });
+    out.segs.set(k, best.map);
+    out.segMeta.set(k, { app: best.app, name: best.name, ch: best.ch, tplCtrl: best.tplCtrl });
+    for (const c of scored) segClaim.add(`${c.ch}|${c.name}`);
+  };
+  const monoSegKeys = [...new Set(mono.flatMap((s) => (s && s.segs ? [...s.segs.keys()] : [])))].sort();
+  for (const k of monoSegKeys) {
+    const [ch, name] = k.split("/");
+    const row = { key: k, name, channel: ch, present: inSide("segs", k), status: "none", method: "", target: null, alts: [] };
+    if (!C.r26.includes(ch)) { row.status = "tablet"; row.method = `${ch} template — the micro apps have no ${ch} templates`; report.segs.push(row); continue; }
+    const ids = new Set(ref("segs", k).keys());
+    const score = (list) => list.map((c) => ({ ...c, score: jaccard(ids, new Set(c.map.keys())) })).sort((x, y) => y.score - x.score || sharedApp(y) - sharedApp(x) || x.app.localeCompare(y.app));
+    let cands = r26Segs.get(`${ch}|${name}`) || [];
+    if (cands.length) place(row, k, score(cands), cands.length === 1 ? "unique name" : "same name");
+    else {
+      const { root } = await metaOf(ref("segs", k), name);
+      const viaRoot = root ? await byRoot(ch, root) : [];
+      if (viaRoot.length) { row.renamed = true; place(row, k, score(viaRoot), `renamed to ${viaRoot[0].name} — same root flex ${root}`); }
+      else row.method = root ? `no template named ${name} or with root flex ${root} in any micro app` : `no template named ${name} in any micro app`;
+    }
+    report.segs.push(row);
+  }
+  // R26-only templates: one row per name, the copy in a shared app (or the first) stands for the others
+  for (const [id, cands] of r26Segs) {
+    if (segClaim.has(id)) continue;
+    const [ch, name] = id.split("|");
+    const rep = [...cands].sort((x, y) => sharedApp(y) - sharedApp(x) || x.app.localeCompare(y.app))[0];
+    const ids = new Set(rep.map.keys());
+    const scored = [rep, ...cands.filter((c) => c !== rep).map((c) => ({ ...c, score: jaccard(ids, new Set(c.map.keys())) })).sort((x, y) => y.score - x.score)];
+    const k = `${ch}/${name}`;
+    const row = { key: k, name, channel: ch, present: [false, false], status: "r26only", method: "", target: null, alts: [] };
+    place(row, k, scored.map((c, i) => (i === 0 ? { ...c, score: null } : c)), cands.length === 1 ? `only in ${rep.app}` : "only in the micro apps");
+    report.segs.push(row);
   }
 
   let business = 0, presentation = 0;
   for (const k of out.mvc.keys()) { if (/\/BusinessControllers\//.test(k)) business++; else presentation++; }
   const r26 = {
     ...out, fileCount: ma.fileCount, microApps: ma.apps.size,
-    counts: { forms: out.forms.size, controllers: out.controllers.size, business, presentation, components: out.comps.size },
+    appFiles: new Map([...ma.apps.values()].map((a) => [a.name, a.files])), // each micro app's files, for drawing its templates
+    counts: { forms: out.forms.size, controllers: out.controllers.size, business, presentation, components: out.comps.size, segments: out.segs.size },
   };
   report.r26Only = {
     forms: [...out.forms.keys()].filter((k) => k.includes("·")).length,
     controllers: [...out.controllers.keys()].filter((k) => k.includes("·")).length,
     mvc: [...out.mvc.keys()].filter((k) => k.startsWith("[")).length,
     comps: [...out.comps.keys()].filter((k) => !monoCompKeys.includes(k)).length,
+    segs: report.segs.filter((r) => r.status === "r26only").length,
   };
   onProgress({ step: "done", running: false });
   return { r26, report };

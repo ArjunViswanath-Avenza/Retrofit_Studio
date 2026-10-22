@@ -24,15 +24,19 @@ export async function previewAssets(idx) {
   const pp = looseJson(await idx.read("projectProperties.json")) || {};
   const theme = pp.defaulttheme || "defaultTheme";
   const skinsByKuid = new Map(), skinsByName = new Map();
-  for (const rel of F.keys()) {
-    const m = rel.match(/^themes\/([^/]+)\/([^/]+)\.json$/);
-    if (!m) continue;
-    const isActive = m[1] === theme;
-    if (!isActive && skinsByName.has(m[2])) continue;
-    const j = looseJson(await idx.read(rel));
-    if (!j) continue;
-    if (isActive || !skinsByName.has(m[2])) skinsByName.set(m[2], j);
-    if (j.kuid && (isActive || !skinsByKuid.has(j.kuid))) skinsByKuid.set(j.kuid, { ...j, _name: m[2] });
+  // the active theme first, then the others for skins it lacks; read in parallel batches (themes hold thousands)
+  const themed = [];
+  for (const rel of F.keys()) { const m = rel.match(/^themes\/([^/]+)\/([^/]+)\.json$/); if (m) themed.push({ rel, name: m[2], active: m[1] === theme }); }
+  themed.sort((x, y) => (y.active ? 1 : 0) - (x.active ? 1 : 0));
+  for (let i = 0; i < themed.length; i += 128) {
+    const part = themed.slice(i, i + 128).filter((t) => t.active || !skinsByName.has(t.name));
+    const texts = await Promise.all(part.map((t) => idx.read(t.rel)));
+    part.forEach((t, k) => {
+      const j = looseJson(texts[k]);
+      if (!j) return;
+      if (t.active || !skinsByName.has(t.name)) skinsByName.set(t.name, j);
+      if (j.kuid && (t.active || !skinsByKuid.has(j.kuid))) skinsByKuid.set(j.kuid, { ...j, _name: t.name });
+    });
   }
   const images = new Map(), fonts = new Map();
   const rank = (rel) => (/\/desktop\//.test(rel) ? 0 : /\/common\//.test(rel) ? 1 : /^web\//.test(rel) ? 3 : 2);
@@ -178,7 +182,8 @@ async function buildTree(idx, A, W, bpKey, prefix, diffs, depth, overrides) {
       return node;
     }
     if (j.wType === "Segment") {
-      const t = j.rowtemplate && A.templates.get(j.rowtemplate);
+      // forms name a template by its root flex id; that widget's file sits in the template's .sm folder
+      const t = j.rowtemplate && (A.templates.get(j.rowtemplate) || [...A.templates.values()].find((x) => x.files.some((r) => r.endsWith(`/${j.rowtemplate}.json`))));
       if (t) {
         const TW = await treeOf(idx, t.files);
         node.seg = [];
@@ -224,7 +229,57 @@ export async function renderPreview(idx, formKey, doc, opts) {
   const formJ = [...W.values()].find((x) => !x.parent);
   const bp = currentBreakpoint(formJ, width);
   const tree = await buildTree(idx, A, W, bp.key, "", null, 0, overrides);
-  // skins and fonts actually used
+  await writeDoc(idx, A, tree, doc);
+  const body = doc.body;
+  const formEl = doc.createElement("div");
+  formEl.className = "kin " + (tree.p.skin ? "k_" + cssId(tree.p.skin) : "");
+  formEl.style.cssText = `position:relative;width:${width}px;height:${height}px;overflow:auto`;
+  body.appendChild(formEl);
+  const ctx = { doc, A, i18n: A.i18n, byPath: new Map(), stats: { widgets: 0, placeholders: 0, hiddenWidgets: 0 } };
+  for (const k of tree.kids) mount(ctx, k, formEl);
+  layoutChildren(ctx, tree, formEl, width, height);
+  // pick + hover
+  body.addEventListener("click", (e) => { const w = e.target.closest(".kw"); if (w) { e.preventDefault(); if (onPick) onPick(w.dataset.path); } }, true);
+  body.addEventListener("mouseover", (e) => { const w = e.target.closest(".kw"); for (const x of doc.querySelectorAll(".bp-hover")) x.classList.remove("bp-hover"); if (w) { w.classList.add("bp-hover"); if (onHover) onHover(w.dataset.path); } });
+  return { tree, bp, byPath: ctx.byPath, stats: ctx.stats, formJ };
+}
+
+// a segment template drawn as one row of a segment `width` px wide: W = Map(widget id -> widget JSON) of its .sm
+// folder (the top file is a Form whose one child is the row's root flex). showHidden: draw widgets hidden in the
+// design too. Returns the tree, id -> node (node.el is the widget's element) and the row height.
+export async function renderTemplate(idx, W, doc, { width, showHidden, extraCss = "" }) {
+  const A = await previewAssets(idx);
+  const top = [...W.values()].find((x) => !x.parent);
+  const bp = currentBreakpoint(top, width);
+  const tree = await buildTree(idx, A, W, bp.key, "", null, 0, null);
+  if (!tree) return null;
+  const byId = new Map();
+  const walk = (n) => { byId.set(n.id, n); if (showHidden) n.p.isVisible = true; for (const k of n.kids) walk(k); };
+  walk(tree);
+  await writeDoc(idx, A, tree, doc, extraCss);
+  const body = doc.body;
+  const ctx = { doc, A, i18n: A.i18n, byPath: new Map(), stats: { widgets: 0, placeholders: 0, hiddenWidgets: 0 } };
+  let total = 0;
+  for (const row of tree.kids) {
+    // like a segment row: the root flex's skin on the row, its children laid out inside; a dp height is kept, any
+    // other height grows with the content
+    const rowEl = doc.createElement("div"); rowEl.className = "krow kw"; rowEl.dataset.path = row.path; rowEl.style.position = "relative"; rowEl.style.width = width + "px";
+    const rw = doc.createElement("div"); rw.className = "kin" + (row.p.skin ? " k_" + cssId(row.p.skin) : ""); rw.style.position = "relative";
+    rowEl.appendChild(rw); body.appendChild(rowEl);
+    row.el = rowEl; row.inner = rw;
+    for (const k of row.kids) mount(ctx, k, rw);
+    const bw = borderW(rw, "Left") + borderW(rw, "Right");
+    const fixed = row.p.height && row.p.height !== "preferred" && row.p.height.u !== "%" ? row.p.height.v : null;
+    const h = fixed != null ? fixed : layoutChildren(ctx, row, rw, width - bw, 0);
+    rowEl.style.height = h + "px"; rw.style.height = h + "px";
+    layoutChildren(ctx, row, rw, width - bw, h);
+    total += h;
+  }
+  return { tree, byId, height: Math.max(1, Math.ceil(total)), stats: ctx.stats, bp };
+}
+
+// the iframe document: base CSS, the skins / fonts / images the tree uses
+async function writeDoc(idx, A, tree, doc, extraCss = "") {
   const used = new Set(), fontsUsed = new Set(), imgs = new Set();
   const walk = (n) => { if (!n) return; if (n.p.skin) used.add(n.p.skin); if (n.p.src) imgs.add(n.p.src); for (const k of n.kids) walk(k); for (const r of n.seg || []) walk(r); };
   walk(tree);
@@ -243,24 +298,12 @@ export async function renderPreview(idx, formKey, doc, opts) {
   for (const s of used) { const sk = A.skinsByKuid.get(s) || A.skinsByName.get(s); if (sk && sk.background_image) { const rel = A.images.get(String(sk.background_image).toLowerCase()); if (rel) await blobUrl(idx, A, rel); } }
   css = css.replace(/url\("__IMG__([^"]+)"\)/g, (_, n) => { const rel = A.images.get(n.toLowerCase()); return rel && A.blobs.get(rel) ? `url("${A.blobs.get(rel)}")` : "none"; });
   doc.open();
-  doc.write(`<!doctype html><html><head><meta charset="utf-8"><style>${css}</style></head><body></body></html>`);
+  doc.write(`<!doctype html><html><head><meta charset="utf-8"><style>${css}${extraCss}</style></head><body></body></html>`);
   doc.close();
   // image natural sizes are needed for preferred sizes
   for (const s of imgs) { const key = String(s).toLowerCase(); const v = A.imgSize.get(key); if (v === undefined || (v && typeof v.then === "function")) A.imgSize.set(key, (await imageSize(A, s)) || null); }
   // web fonts are only fetched once text uses them: load them all now, or preferred sizes are measured in a fallback font
   if (doc.fonts) { try { await Promise.race([Promise.all([...doc.fonts].map((ff) => ff.load().catch(() => null))), new Promise((r) => setTimeout(r, 4000))]); } catch { /* a missing font falls back */ } }
-  const body = doc.body;
-  const formEl = doc.createElement("div");
-  formEl.className = "kin " + (tree.p.skin ? "k_" + cssId(tree.p.skin) : "");
-  formEl.style.cssText = `position:relative;width:${width}px;height:${height}px;overflow:auto`;
-  body.appendChild(formEl);
-  const ctx = { doc, A, i18n: A.i18n, byPath: new Map(), stats: { widgets: 0, placeholders: 0, hiddenWidgets: 0 } };
-  for (const k of tree.kids) mount(ctx, k, formEl);
-  layoutChildren(ctx, tree, formEl, width, height);
-  // pick + hover
-  body.addEventListener("click", (e) => { const w = e.target.closest(".kw"); if (w) { e.preventDefault(); if (onPick) onPick(w.dataset.path); } }, true);
-  body.addEventListener("mouseover", (e) => { const w = e.target.closest(".kw"); for (const x of doc.querySelectorAll(".bp-hover")) x.classList.remove("bp-hover"); if (w) { w.classList.add("bp-hover"); if (onHover) onHover(w.dataset.path); } });
-  return { tree, bp, byPath: ctx.byPath, stats: ctx.stats, formJ };
 }
 const cssId = (s) => String(s).replace(/[^A-Za-z0-9_-]/g, "_");
 function fixImages(style, A) { return style.replace(/url\("([^"]+)"\)/g, (m, n) => (A.images.has(n.toLowerCase()) ? `url("__IMG__${n}")` : "none")); }

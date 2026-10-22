@@ -21,6 +21,10 @@ const CAT = {
     title: "Forms · Overall comparison", noun: "forms", kind: "json", grouped: true, unit: "widget files",
     crumb: "Every widget JSON file of every form (.sm folder) — formatted and compared line by line",
   },
+  segs: {
+    title: "Segment templates · Overall comparison", noun: "templates", grouped: true, unit: "files",
+    crumb: "Every file of every segment template — its widget JSONs plus its controller and actions (controllers/<channel>/<rootFlex>Controller/) — formatted and compared line by line",
+  },
   comps: {
     title: "Components · Overall comparison", noun: "components", grouped: true, unit: "files",
     crumb: "Every file of every user widget — controller, actions, uwProperties, uwDependencies, helper scripts and each widget JSON — formatted and compared line by line",
@@ -36,6 +40,11 @@ function sortIds(cat, key, ids) {
     const formId = key.split("/").pop().replace(/\.sm$/i, "");
     return ids.sort((x, y) => (x === formId ? -1 : y === formId ? 1 : x.localeCompare(y)));
   }
+  if (cat === "segs") {
+    const top = key.split("/").pop() + ".json";
+    const r = (id) => (/ControllerActions\.js$/.test(id) ? 1 : /Controller\.js$/.test(id) ? 0 : id === top ? 2 : 3);
+    return ids.sort((x, y) => r(x) - r(y) || x.localeCompare(y));
+  }
   const rank = (id) => ROLE_RANK[roleOf(key, id)] * 2 + (id === "userwidgetmodel.sm/userwidgetmodel.json" ? 0 : 1);
   return ids.sort((x, y) => rank(x) - rank(y) || x.localeCompare(y));
 }
@@ -45,6 +54,7 @@ const stLabel = (st, la, lb) => ({ changed: "Changed", onlyA: `Only in ${la}`, o
 
 const titleOf = (cat, key) => {
   if (cat === "comps") return key.split(".").pop();
+  if (cat === "segs") return key.split("/").pop();
   const parts = key.split("/");
   if (cat === "forms") return parts.pop().replace(/\.sm$/i, "");
   if (cat === "mvc") return parts[0];
@@ -52,6 +62,7 @@ const titleOf = (cat, key) => {
 };
 const subOf = (cat, key) => {
   if (cat === "comps") return key.split(".").slice(0, -1).join(".");
+  if (cat === "segs") return `templates/${key.split("/")[0]}/segments`;
   if (cat === "forms") return key.split("/").slice(0, -1).join("/");
   if (cat === "mvc") return key.split("/").slice(1).join("/");
   return key.split("/").slice(0, -1).join("/");
@@ -184,7 +195,7 @@ export function OverallView({ cat, picked, cache, setCache, focus, labels = DEFA
                       <div className="ovsub">
                         {stLabel(st, la, lb)}
                         {dt && st === "changed" && (
-                          <> · {cat === "comps" ? "files" : "widgets"} {dt.counts.changed > 0 && <b className="c">~{dt.counts.changed}</b>} {dt.counts.onlyB > 0 && <b className="a">+{dt.counts.onlyB}</b>} {dt.counts.onlyA > 0 && <b className="r">−{dt.counts.onlyA}</b>}</>
+                          <> · {cat === "comps" || cat === "segs" ? "files" : "widgets"} {dt.counts.changed > 0 && <b className="c">~{dt.counts.changed}</b>} {dt.counts.onlyB > 0 && <b className="a">+{dt.counts.onlyB}</b>} {dt.counts.onlyA > 0 && <b className="r">−{dt.counts.onlyA}</b>}</>
                         )}
                       </div>
                       <div className="ovpath">{subOf(cat, k)}</div>

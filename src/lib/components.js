@@ -89,7 +89,7 @@ const EMPTY = { moduleName: null, members: {} };
 const norm = (s) => (s || "").replace(/\r\n?/g, "\n").replace(/^﻿/, "");
 
 // one aspect across versions: files[i] = File | File[] | null ; parse(src, file) -> {members}
-async function aspect(labels, files, parse) {
+export async function aspect(labels, files, parse) {
   if (!files.some((f) => f && (!Array.isArray(f) || f.length))) return null;
   const list = [];
   for (let i = 0; i < labels.length; i++) {
@@ -114,7 +114,7 @@ async function aspect(labels, files, parse) {
   return buildModel(list);
 }
 
-async function readWidgetJson(map) {
+export async function readWidgetJson(map) {
   const W = {};
   if (!map) return W;
   const entries = [...map];
