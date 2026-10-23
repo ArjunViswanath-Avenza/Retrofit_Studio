@@ -198,3 +198,49 @@ export async function segmentUsage(picked, onProgress) {
   onProgress({ done: total, total, running: false });
   return all;
 }
+
+// every line that names one widget of a template, in one version: the template's own controller + actions, then
+// wherever the template is used — the form's segment JSON (its widgetDataMap) and controller, a component's scripts,
+// presentation / business code, other templates' controllers. uses: that version's usage entries for the template.
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const ctrlOfForm = (fk) => { const s = fk.split("/"); const name = s.pop().replace(/\.sm$/i, ""); return [...s, `${name}Controller`, `${name}Controller.js`].join("/"); };
+export async function widgetRefs(p, key, id, uses) {
+  const c = await segCopy(p, key);
+  if (!c) return [];
+  const re = new RegExp(`(^|[^\\w$])${esc(id)}(?![\\w$])`);
+  const out = [];
+  const scan = async (file, group) => {
+    if (!file) return;
+    const L = (await file.text()).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n");
+    const hits = [];
+    L.forEach((t, i) => { if (re.test(t)) hits.push({ line: i + 1, text: t.trim().slice(0, 240), from: Math.max(1, i - 2), ctx: L.slice(Math.max(0, i - 3), i + 4) }); });
+    if (hits.length) out.push({ ...group, hits: hits.slice(0, 40), more: Math.max(0, hits.length - 40) });
+  };
+  await scan(c.controller, { kind: "template", label: `${c.root}Controller.js`, sub: "the template's own controller", path: c.ctrlPath });
+  await scan(c.actions, { kind: "template", label: `${c.root}ControllerActions.js`, sub: "the template's action sequences", path: c.ctrlPath });
+  const done = new Set();
+  for (const e of uses || []) {
+    if (e.kind === "form") {
+      const widget = !/^controller line/.test(e.via) && p.forms && p.forms.get(e.where) ? p.forms.get(e.where).get(e.via) : null;
+      const sig = widget ? `fw|${e.where}|${e.via}` : `fc|${e.where}`;
+      if (done.has(sig)) continue;
+      done.add(sig);
+      const name = e.where.split("/").pop().replace(/\.sm$/i, "");
+      if (widget) await scan(widget, { kind: "form", label: name, sub: `segment ${e.via} · its widgetDataMap / settings`, app: e.app, path: e.where });
+      else await scan(p.controllers && p.controllers.get(ctrlOfForm(e.where)), { kind: "form", label: name, sub: `${name}Controller.js`, app: e.app, path: e.where });
+    } else if (e.kind === "component") {
+      if (done.has(`c|${e.where}`)) continue;
+      done.add(`c|${e.where}`);
+      for (const [rel, f] of (p.comps && p.comps.get(e.where)) || []) if (/\.js$/i.test(rel)) await scan(f, { kind: "component", label: e.where.split(".").pop(), sub: rel, app: e.app, path: e.where });
+    } else if (e.kind === "module") {
+      if (done.has(`m|${e.where}`)) continue;
+      done.add(`m|${e.where}`);
+      await scan(p.mvc && p.mvc.get(e.where), { kind: "module", label: e.where.split("/")[0], sub: e.where.split("/").slice(1).join("/"), path: e.where });
+    } else if (e.kind === "template") {
+      if (done.has(`t|${e.where}`)) continue;
+      done.add(`t|${e.where}`);
+      await scan(p.controllers && p.controllers.get(`${key.split("/")[0]}/${e.where}/${e.where}.js`), { kind: "template", label: `${e.where}.js`, sub: "another template's controller", path: e.where });
+    }
+  }
+  return out;
+}

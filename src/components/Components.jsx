@@ -84,7 +84,7 @@ function CompDashboard({ bulk, labels, setDrill }) {
   const max = top.length ? top[0].total : 1;
   const toggle = (st) => setShow((s) => { const n = new Set(s); if (n.has(st)) n.delete(st); else n.add(st); return n; });
   const th = (k, t) => (
-    <th className="sortable" onClick={() => setSort(([sk, d]) => [k, sk === k ? -d : k === "name" ? 1 : -1])}>
+    <th key={k} className="sortable" onClick={() => setSort(([sk, d]) => [k, sk === k ? -d : k === "name" ? 1 : -1])}>
       {t}{sort[0] === k ? (sort[1] < 0 ? " ▼" : " ▲") : ""}
     </th>
   );

@@ -100,7 +100,7 @@ function SegDashboard({ bulk, labels, setDrill, report, usage, usageProg }) {
   }, [R, q, show, loc, sort, report, usage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggle = (st) => setShow((s) => { const n = new Set(s); if (n.has(st)) n.delete(st); else n.add(st); return n; });
-  const th = (k, t) => <th className="sortable" onClick={() => setSort(([sk, d]) => [k, sk === k ? -d : k === "name" ? 1 : -1])}>{t}{sort[0] === k ? (sort[1] < 0 ? " ▼" : " ▲") : ""}</th>;
+  const th = (k, t) => <th key={k} className="sortable" onClick={() => setSort(([sk, d]) => [k, sk === k ? -d : k === "name" ? 1 : -1])}>{t}{sort[0] === k ? (sort[1] < 0 ? " ▼" : " ▲") : ""}</th>;
 
   const exportCsv = () => {
     const out = [["template", "channel", "status", ...labels.map((l) => `${l} location`), `${N || ""} other copies`, "match", ...labels.map((l) => `used by (${l})`), "structure", "controller", "actions", "conflicts", "total"]];
@@ -252,7 +252,7 @@ function SegmentDetail({ r, picked, labels, setDrill, aspect, setAspect, renderR
         })}
       </div>
       <p className="note">Counts are {C} vs {O} changes (the customisation). Each tab also shows how {N || "the new base"} compares.</p>
-      {cur === "visual" && <SegmentVisual key={"visual:" + r.key} r={r} picked={picked} labels={labels} />}
+      {cur === "visual" && <SegmentVisual key={"visual:" + r.key} r={r} picked={picked} labels={labels} usage={usage} />}
       {cur === "structure" && (r.errors.structure ? <p className="note">Could not read the widget tree: {r.errors.structure}</p> : (
         <FormTree key={r.key} formKey={r.key} picked={picked} labels={labels} pairIdx={pairIdx} setPairIdx={setPairIdx} getMap={(i) => (picked[i] && picked[i].segs ? picked[i].segs.get(r.key) : undefined)} embedded />
       ))}
