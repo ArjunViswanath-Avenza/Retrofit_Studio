@@ -229,3 +229,20 @@ export function summarizeForm(WA, WB) {
   const d = buildFormDiff(WA, WB);
   return { ...d.totals, propWidgets: d.propWidgets, leaves: d.leaves, byCategory: d.byCategory };
 }
+
+// the same diff with some parameters (top-level widget JSON keys) left out: a widget whose only property changes are
+// excluded counts as unchanged; added / removed / moved widgets are kept
+export function withoutKeys(diff, keys) {
+  if (!diff || !keys || !keys.size) return diff;
+  const nodes = new Map();
+  const totals = { added: 0, removed: 0, moved: 0, modified: 0, same: 0 };
+  let propWidgets = 0, leaves = 0;
+  for (const [id, n] of diff.nodes) {
+    const props = n.props.filter((p) => !keys.has(p.key));
+    const status = n.status === "modified" && !props.length ? "same" : n.status;
+    nodes.set(id, { ...n, props, status, excluded: n.props.length - props.length });
+    totals[status]++;
+    if (props.length) { propWidgets++; leaves += props.length; }
+  }
+  return { ...diff, nodes, totals, propWidgets, leaves };
+}

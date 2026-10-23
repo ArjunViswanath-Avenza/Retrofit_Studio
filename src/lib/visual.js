@@ -23,15 +23,20 @@ function indexOf(lists, ch, name) {
 // p: one version's scan (monolith) or the aligned R26 (segMeta + appFiles); key: "<channel>/<template>"
 export function templateIndex(p, key) {
   if (!p || !p.segs || !p.segs.has(key)) return null;
-  const ch = key.split("/")[0];
   const meta = p.segMeta && p.segMeta.get(key);
-  const app = meta && p.appFiles ? meta.app : "";
+  return versionIndex(p, meta ? meta.app : "", key.split("/")[0]);
+}
+// any artifact of one version: a monolith is one project; in R26 the micro app holding it (formApp / compApp) comes first
+export function versionIndex(p, app, ch) {
+  if (!p) return null;
+  app = app && p.appFiles && p.appFiles.has(app) ? app : "";
+  if (!app && !p.all && !p.appFiles) return null;
   if (!made.has(p)) made.set(p, new Map());
   const cache = made.get(p);
   const id = `${app}|${ch}`;
   if (!cache.has(id)) {
     let lists;
-    if (app) {
+    if (app || !p.all) {
       const shared = (n) => (n === app ? 0 : /^Resources/.test(n) ? 1 : n === "CommonsMA" ? 2 : n === "OnlineBanking" ? 3 : 4);
       lists = [...p.appFiles.keys()].sort((x, y) => shared(x) - shared(y) || x.localeCompare(y)).map((n) => p.appFiles.get(n));
     } else lists = [p.all];

@@ -6,7 +6,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { renderTemplate } from "../lib/preview";
 import { templateIndex } from "../lib/visual";
 import { readWidgetJson } from "../lib/components";
-import { buildFormDiff } from "../lib/forms";
+import { buildFormDiff, withoutKeys } from "../lib/forms";
 import { widgetRefs } from "../lib/segments";
 
 const PAIRS = [[0, 1], [0, 2], [1, 2]];
@@ -26,7 +26,7 @@ const HL_CSS = `
 .kw.hl-sel>.kin,.krow.hl-sel>.kin{outline:3px solid #F26A21!important;outline-offset:-3px}
 `;
 
-export function SegmentVisual({ r, picked, labels, usage }) {
+export function SegmentVisual({ r, picked, labels, usage, excludeKeys }) {
   const [width, setWidth] = useState(1024);
   const [showHidden, setShowHidden] = useState(false);
   const [hl, setHl] = useState(false);
@@ -44,7 +44,7 @@ export function SegmentVisual({ r, picked, labels, usage }) {
 
   const pairs = PAIRS.filter(([a, b]) => b < labels.length);
   const [a, b] = pairs[Math.min(pairIdx, pairs.length - 1)];
-  const diff = useMemo(() => (hl && Ws ? buildFormDiff(Ws[a] || {}, Ws[b] || {}) : null), [hl, Ws, a, b]);
+  const diff = useMemo(() => (hl && Ws ? withoutKeys(buildFormDiff(Ws[a] || {}, Ws[b] || {}), excludeKeys) : null), [hl, Ws, a, b, excludeKeys]);
   const changes = useMemo(() => (diff ? diff.order.map((id) => diff.nodes.get(id)).filter((n) => n.status !== "same") : []), [diff]);
   const marksFor = (i) => {
     if (!diff) return null;

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
+import { WidgetDialog } from "./WidgetDialog";
 import { idSetDiff, buildFormDiff, computeCounts, summarizeForm, CATEGORIES, CATEGORY_LABELS } from "../lib/forms";
 
 const PAIRS = [[0, 1], [0, 2], [1, 2]]; // positions in labels: base·custom, base·new, custom·new
@@ -195,7 +196,10 @@ function FormsList({ picked, labels, pairIdx, setPairIdx, openForm, scanEntry })
 
 /* ================================================================= tree ================================================================= */
 // getMap(i) -> Map(widgetId -> File) for version i (defaults to the form's .sm); embedded hides the page header
-export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, getMap, embedded }) {
+// previewKind ("form" | "component" | "segment"): widget names open the Preview & edit dialog for that kind
+// excludeKeys: parameters (top-level widget JSON keys) that never count as a property change
+export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, getMap, embedded, previewKind = "form", excludeKeys }) {
+  const [dlg, setDlg] = useState(null);
   const [ia, ib] = PAIRS[pairIdx];
   const A = labels[ia], B = labels[ib];
   const [data, setData] = useState(null);
@@ -230,10 +234,10 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
     return () => { cancelled = true; };
   }, [formKey, pairIdx, picked, ia, ib]);
 
-  const propInScope = (p) => showMod && cats.has(p.category) && (!keyFilter || p.key === keyFilter);
+  const propInScope = (p) => showMod && cats.has(p.category) && (!keyFilter || p.key === keyFilter) && !(excludeKeys && excludeKeys.has(p.key));
   const counts = useMemo(() => (data ? computeCounts(data, propInScope) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data, showMod, cats, keyFilter]);
+    [data, showMod, cats, keyFilter, excludeKeys]);
   const eff = (id) => counts.eff.get(id);
   const score = (id) => { const e = eff(id); return e ? e.added + e.removed + e.moved + e.modified : 0; };
 
@@ -302,7 +306,14 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
     }
     return t;
   }, [data, counts]);
-  const topKeys = data ? Object.entries(data.byKey).sort((x, y) => y[1] - x[1]).slice(0, 10) : [];
+  // per-category counts without the excluded parameters
+  const byCategory = useMemo(() => {
+    if (!data || !excludeKeys || !excludeKeys.size) return data ? data.byCategory : {};
+    const c = {};
+    for (const n of data.nodes.values()) for (const p of n.props) if (!excludeKeys.has(p.key)) c[p.category] = (c[p.category] || 0) + 1;
+    return c;
+  }, [data, excludeKeys]);
+  const topKeys = data ? Object.entries(data.byKey).filter(([k]) => !(excludeKeys && excludeKeys.has(k))).sort((x, y) => y[1] - x[1]).slice(0, 10) : [];
   const maxLevel = counts ? Math.max(1, ...counts.levels.map((l) => l.added + l.removed + l.moved + l.modified)) : 1;
 
   return (
@@ -337,9 +348,9 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
                 <span className="chip" onClick={() => setCats(new Set())}>none</span>
               </div>
               <div className="catchips">
-                {CATEGORIES.filter((c) => data.byCategory[c]).map((c) => (
+                {CATEGORIES.filter((c) => byCategory[c]).map((c) => (
                   <span key={c} className={"catchip" + (cats.has(c) ? " on" : "")} onClick={() => toggleCat(c)}>
-                    {CATEGORY_LABELS[c]} <b>{data.byCategory[c]}</b>
+                    {CATEGORY_LABELS[c]} <b>{byCategory[c]}</b>
                   </span>
                 ))}
               </div>
@@ -412,7 +423,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
                     {Array.from({ length: depth }, (_, k) => <span key={k} className="guide" />)}
                     <span className={"tchev" + (open ? " open" : "") + (kids ? "" : " none")} onClick={(ev) => { ev.stopPropagation(); if (kids) toggle(n.id); }}>▶</span>
                     <span className="tmark">{MARK[e.status]}</span>
-                    <span className="tid">{n.id}</span>
+                    <span className={"tid" + (previewKind ? " wd-open" : "")} title={previewKind ? "Preview & edit in R21 · KBZ · R26" : undefined} onClick={previewKind ? (ev) => { ev.stopPropagation(); setSel(n.id); setDlg(n.id); } : undefined}>{n.id}</span>
                     <span className="wtag">{n.wType}</span>
                     {e.props > 0 && <span className="pbadge" title={`${e.props} property change(s)`}>~{e.props}</span>}
                     {!open && kids && (e.added || e.removed || e.modified) ? (
@@ -432,7 +443,9 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
                 <p className="note">Select a widget to see its details and property changes.</p>
               ) : (
                 <>
-                  <div className="tdhead"><span className={"lg " + selNode.status}>{selNode.status === "modified" ? "properties changed" : selNode.status}</span> <b>{selNode.id}</b></div>
+                  <div className="tdhead"><span className={"lg " + selNode.status}>{selNode.status === "modified" ? "properties changed" : selNode.status}</span> <b>{selNode.id}</b>
+                    {previewKind && <button className="btn" style={{ marginLeft: "auto", padding: "3px 10px" }} onClick={() => setDlg(selNode.id)}>◱ Preview &amp; edit</button>}</div>
+                  {dlg && <WidgetDialog kind={previewKind} itemKey={formKey} id={dlg} picked={picked} labels={labels} onClose={() => setDlg(null)} />}
                   <table className="kv">
                     <tbody>
                       <tr><td>Type</td><td>{selNode.wType} <span className="tag">{selNode.name}</span></td></tr>
@@ -442,13 +455,14 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
                       <tr><td>Children</td><td>{selNode.children.length}</td></tr>
                     </tbody>
                   </table>
-                  {selNode.props.length === 0 ? (
+                  {excludeKeys && selNode.props.some((p) => excludeKeys.has(p.key)) && <p className="tag" style={{ marginTop: 8 }}>{selNode.props.filter((p) => excludeKeys.has(p.key)).length} change(s) in excluded parameters not shown ({[...new Set(selNode.props.filter((p) => excludeKeys.has(p.key)).map((p) => p.key))].join(", ")}).</p>}
+                  {selNode.props.filter((p) => !(excludeKeys && excludeKeys.has(p.key))).length === 0 ? (
                     <p className="tag" style={{ marginTop: 10 }}>
                       {selNode.status === "added" ? `Exists only in ${B}.` : selNode.status === "removed" ? `Exists only in ${A}.` : "No property differences."}
                     </p>
                   ) : (
-                    CATEGORIES.filter((c) => selNode.props.some((p) => p.category === c)).map((c) => {
-                      const list = selNode.props.filter((p) => p.category === c);
+                    CATEGORIES.filter((c) => selNode.props.some((p) => p.category === c && !(excludeKeys && excludeKeys.has(p.key)))).map((c) => {
+                      const list = selNode.props.filter((p) => p.category === c && !(excludeKeys && excludeKeys.has(p.key)));
                       const inScope = showMod && cats.has(c);
                       return (
                         <div key={c} className={"pgroup" + (inScope ? "" : " dim")}>

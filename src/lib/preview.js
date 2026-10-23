@@ -278,6 +278,28 @@ export async function renderTemplate(idx, W, doc, { width, showHidden, extraCss 
   return { tree, byId, height: Math.max(1, Math.ceil(total)), stats: ctx.stats, bp };
 }
 
+// a whole form drawn from its widget files (W = Map(widget id -> widget JSON)), e.g. after edits; same layout as
+// renderPreview. Returns the tree, id -> node, the scrolling form element and the breakpoint.
+export async function renderForm(idx, W, doc, { width, height, showHidden, extraCss = "" }) {
+  const A = await previewAssets(idx);
+  const formJ = [...W.values()].find((x) => !x.parent);
+  const bp = currentBreakpoint(formJ, width);
+  const tree = await buildTree(idx, A, W, bp.key, "", null, 0, null);
+  if (!tree) return null;
+  const byId = new Map();
+  const walk = (n) => { if (!byId.has(n.id)) byId.set(n.id, n); if (showHidden) n.p.isVisible = true; for (const k of n.kids) walk(k); };
+  walk(tree);
+  await writeDoc(idx, A, tree, doc, extraCss);
+  const formEl = doc.createElement("div");
+  formEl.className = "kin " + (tree.p.skin ? "k_" + cssId(tree.p.skin) : "");
+  formEl.style.cssText = `position:relative;width:${width}px;height:${height}px;overflow:auto`;
+  doc.body.appendChild(formEl);
+  const ctx = { doc, A, i18n: A.i18n, byPath: new Map(), stats: { widgets: 0, placeholders: 0, hiddenWidgets: 0 } };
+  for (const k of tree.kids) mount(ctx, k, formEl);
+  layoutChildren(ctx, tree, formEl, width, height);
+  return { tree, byId, formEl, bp, stats: ctx.stats, height };
+}
+
 // the iframe document: base CSS, the skins / fonts / images the tree uses
 async function writeDoc(idx, A, tree, doc, extraCss = "") {
   const used = new Set(), fontsUsed = new Set(), imgs = new Set();

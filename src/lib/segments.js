@@ -7,7 +7,7 @@
 // In the micro-app workspace picked[2] is R26 aligned onto the monolith's keys; segMeta says which micro app (and
 // which of its templates) stands behind each key.
 import { extract, extractComponent } from "./analyzer.js";
-import { summarizeForm } from "./forms.js";
+import { buildFormDiff } from "./forms.js";
 import { aspect, readWidgetJson, actionLabels } from "./components.js";
 
 const STRUCT_PAIRS = [[0, 1], [0, 2], [1, 2]];
@@ -69,7 +69,14 @@ export async function analyzeSegments(picked, labels, onProgress) {
       for (const c of copies) W.push(c ? await readWidgetJson(c.files) : {});
       for (const [a, b] of STRUCT_PAIRS) {
         if (b >= n || (!copies[a] && !copies[b])) continue;
-        r.structure[`${a}${b}`] = summarizeForm(W[a], W[b]);
+        const d = buildFormDiff(W[a], W[b]);
+        r.structure[`${a}${b}`] = { ...d.totals, propWidgets: d.propWidgets, leaves: d.leaves, byCategory: d.byCategory };
+        // which parameters changed on each changed widget — lets the dashboard recount with some parameters excluded
+        r.wkeys = r.wkeys || {};
+        r.wkeys[`${a}${b}`] = [];
+        for (const n of d.nodes.values()) if (n.props.length) r.wkeys[`${a}${b}`].push([...new Set(n.props.map((p) => p.key))]);
+        r.keyCat = r.keyCat || {};
+        for (const n of d.nodes.values()) for (const p of n.props) r.keyCat[p.key] = p.category;
       }
       r.widgetCounts = Object.fromEntries(L.map((l, i) => [l, Object.keys(W[i]).length]));
     } catch (e) { r.errors.structure = String(e.message || e); }

@@ -1,0 +1,42 @@
+/* ---- Preview & edit dialog (Structure → widget) ---- */
+@keyframes wdIn{from{opacity:0;transform:translateY(12px) scale(.985)}to{opacity:1;transform:none}}
+@keyframes wdFade{from{opacity:0}to{opacity:1}}
+.wd-back{position:fixed;inset:0;z-index:1000;background:rgba(8,10,16,.55);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;animation:wdFade .18s ease both}
+.wd{width:min(1600px,96vw);height:92vh;background:var(--bg);border:1px solid var(--line);border-radius:16px;box-shadow:0 30px 80px rgba(0,0,0,.45);display:flex;flex-direction:column;overflow:hidden;animation:wdIn .25s ease both}
+.wd-head{display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--line);background:var(--panel)}
+.wd-title{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;flex:1;min-width:0}
+.wd-k{font-size:10.5px;font-weight:800;letter-spacing:1px;text-transform:uppercase;color:var(--accent)}
+.wd-title b{font-size:15px}.wd-sep{color:var(--muted)}.wd-id{color:var(--accent)}
+.wd-check{display:inline-flex;gap:6px;align-items:center;font-size:12.5px;color:var(--muted)}
+.wd-x{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;width:34px;height:30px;cursor:pointer;font-size:14px}
+.wd-x:hover{border-color:var(--accent)}
+.wd-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 380px}
+.wd-panes{overflow:auto;padding:12px;display:flex;flex-direction:column;gap:10px}
+.wd-pane{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;flex-shrink:0}
+.wd-ph{display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:7px 10px;border-bottom:1px solid var(--line);font-size:13px}
+.wd-box{position:relative;padding:8px;min-height:60px;background:repeating-conic-gradient(var(--bq) 0% 25%,transparent 0% 50%) 50%/16px 16px}
+.wd-frame{overflow:hidden;box-shadow:0 1px 6px rgba(0,0,0,.15);background:#fff}
+.wd-iframe{border:0;display:block;transform-origin:0 0;background:#fff}
+.wd-load{position:absolute;inset:8px;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--muted);background:rgba(127,127,127,.08);z-index:1}
+.wd-none{padding:12px;color:var(--muted);font-size:12.5px}
+.wd-edit{border-left:1px solid var(--line);background:var(--panel);overflow:auto;padding:12px 14px;font-size:12.5px}
+.wd-has{display:flex;gap:10px;font-size:11.5px;color:var(--muted)}.wd-has .on{color:var(--add-mark);font-weight:700}
+.wd-note{font-size:11.5px;color:var(--muted);margin:6px 0 10px;line-height:1.45}
+.wd-f{padding:6px 0;border-bottom:1px dashed var(--line)}
+.wd-f label{display:flex;gap:6px;align-items:center;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin-bottom:3px}
+.wd-f.on label{color:var(--accent)}
+.wd-f input,.wd-f select{width:100%;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--ink);font-size:12.5px}
+.wd-f.on input,.wd-f.on select{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.wd-diff{font-size:9px;font-weight:800;padding:1px 6px;border-radius:6px;background:rgba(230,163,35,.18);color:#b07a10;text-transform:uppercase}
+.wd-now{display:flex;gap:10px;flex-wrap:wrap;font-size:10.5px;color:var(--muted);margin-top:3px}
+.wd-now b{color:var(--ink);font-family:var(--mono);font-weight:600;word-break:break-all}
+.wd-sec{font-size:10.5px;font-weight:800;letter-spacing:.8px;text-transform:uppercase;color:var(--muted);margin:14px 0 6px;display:flex;gap:6px;align-items:center}
+.wd-json{width:100%;font-family:var(--mono);font-size:12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);padding:8px;resize:vertical}
+.wd-err{color:var(--del-mark);font-size:12px;margin-top:4px}
+.wd-btns{display:flex;gap:8px;margin-top:8px}
+.wd-sum{margin-top:10px;font-size:12px;padding:8px 10px;border-radius:8px;background:var(--accent-soft)}
+.wd-raw{max-height:260px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;font-size:11px}
+@media (max-width:1100px){.wd-body{grid-template-columns:minmax(0,1fr)}.wd-edit{border-left:0;border-top:1px solid var(--line)}}
+/* the Structure tree: widget names open the dialog */
+.tid.wd-open{cursor:pointer;text-decoration:underline dotted;text-underline-offset:3px}
+.tid.wd-open:hover{color:var(--accent)}

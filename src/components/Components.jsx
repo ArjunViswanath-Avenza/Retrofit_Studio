@@ -228,7 +228,7 @@ function ComponentDetail({ r, picked, labels, setDrill, aspect, setAspect, rende
 
       {cur === "structure" && (
         r.errors.structure ? <p className="note">Could not read the widget tree: {r.errors.structure}</p> : (
-          <FormTree key={r.key} formKey={r.key} picked={picked} labels={labels} pairIdx={pairIdx} setPairIdx={setPairIdx}
+          <FormTree key={r.key} formKey={r.key} picked={picked} labels={labels} pairIdx={pairIdx} setPairIdx={setPairIdx} previewKind="component"
             getMap={(i) => smMaps[i]} embedded />
         )
       )}
