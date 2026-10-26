@@ -96,6 +96,7 @@ export function SegmentVisual({ r, picked, labels, usage, excludeKeys }) {
                 <span className={"sv-k " + k}>{SIGN[k]} {n.status}</span>
                 <b className="mono">{n.id}</b><span className="tag">{n.wType}</span>
                 {n.status === "moved" && <span className="tag">{n.oldParent} → {n.newParent}</span>}
+                {n.reorder && <span className="tag">⇅ child order changed</span>}
                 {n.props.length > 0 && <span className="sv-props">{n.props.slice(0, 3).map((p) => `${p.path}${p.embedded ? "" : `: ${short(p.old)} → ${short(p.new)}`}`).join(" · ")}{n.props.length > 3 ? ` · +${n.props.length - 3} more` : ""}</span>}
                 {n.wType === "Form" && <span className="tag">the template's own settings</span>}
                 {isHidden && !showHidden && <span className="pill b2" title="hidden in the design">hidden — tick “Show hidden parts”</span>}

@@ -417,3 +417,8 @@ input.cvbad{outline:2px solid var(--del-mark)}
 .fabcard.dim{opacity:.45}
 .decbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;margin:6px 0 12px;font-size:12.5px}
 .decbar .progress{margin:0}
+
+/* Structure tree: relationship changes (new parent, child order) */
+.pbadge.rel{background:rgba(62,123,214,.14);color:var(--mov-mark)}
+.relorder{margin:0;padding-left:18px}
+.relorder li.mv{background:rgba(62,123,214,.16);border-radius:4px;font-weight:700}

@@ -79,12 +79,15 @@ export async function analyzeSegments(picked, labels, onProgress) {
         for (const n of d.nodes.values()) if (n.props.length) r.wkeys[`${a}${b}`].push([...new Set(n.props.map((p) => p.key))]);
         r.keyCat = r.keyCat || {};
         for (const n of d.nodes.values()) for (const p of n.props) r.keyCat[p.key] = p.category;
+        // relationship changes, so the dashboard can leave them out like parameters ("parent", "children")
+        r.rel = r.rel || {};
+        r.rel[`${a}${b}`] = { moved: d.totals.moved, reordered: d.totals.reordered };
       }
       r.widgetCounts = Object.fromEntries(L.map((l, i) => [l, Object.keys(W[i]).length]));
     } catch (e) { r.errors.structure = String(e.message || e); }
     const g = (m) => (m ? m.genuine.length : 0);
     const s = r.structure["01"];
-    r.changes = { structure: s ? s.added + s.removed + s.moved + s.propWidgets : 0, controller: g(r.models.controller), actions: g(r.models.actions) };
+    r.changes = { structure: s ? s.added + s.removed + s.moved + s.propWidgets + (s.reordered || 0) : 0, controller: g(r.models.controller), actions: g(r.models.actions) };
     r.total = r.changes.structure + r.changes.controller + r.changes.actions;
     r.conflicts = 0;
     for (const m of Object.values(r.models)) if (m) for (const x of Object.values(m.members)) if (x.bucket === "2") r.conflicts++;

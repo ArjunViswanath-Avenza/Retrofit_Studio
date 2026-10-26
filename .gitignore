@@ -25,3 +25,4 @@ dist-ssr
 
 # Trial input projects (multi-GB, picked in the browser — never commit)
 /Apps_Trial
+/Outputs

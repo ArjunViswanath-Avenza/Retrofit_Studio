@@ -75,6 +75,16 @@ function flatten(v, prefix, out, depth) {
   return out;
 }
 
+// two property values are the same change-wise (null / {} / [] / missing alike, IDE-only keys ignored, key order ignored)
+export const sameValue = (a, b) => stable(clean(a)) === stable(clean(b));
+
+// the common children of two versions of a container, each in its own order (only ids present in both lists)
+export function commonOrder(ca, cb) {
+  const A = ca || [], B = cb || [];
+  const inB = new Set(B), inA = new Set(A);
+  return [A.filter((c) => inB.has(c)), B.filter((c) => inA.has(c))];
+}
+
 function leafDiffs(va, vb, key, category) {
   const out = [];
   const fa = flatten(va, key, {}, 0), fb = flatten(vb, key, {}, 0);
@@ -123,15 +133,19 @@ export function buildFormDiff(WA, WB) {
   for (const id of new Set([...Object.keys(WA), ...Object.keys(WB)])) {
     const a = WA[id], b = WB[id];
     const src = b || a;
-    let status, props = [];
+    let status, props = [], moved = false, reorder = null;
     if (a && !b) status = "removed";
     else if (!a && b) status = "added";
     else {
       props = propDiff(a, b, src.wType);
-      status = (a.parent ?? null) !== (b.parent ?? null) ? "moved" : props.length ? "modified" : "same";
+      moved = (a.parent ?? null) !== (b.parent ?? null);
+      // children kept in both versions but in another order (a flow layout draws them differently)
+      const [oa, ob] = commonOrder(a.children, b.children);
+      if (oa.join("|") !== ob.join("|")) reorder = { old: oa, new: ob };
+      status = statusOf({ status: "both", moved, props, reorder });
     }
     nodes.set(id, {
-      id, status, props,
+      id, status, props, moved, reorder,
       wType: src.wType || "", name: src.name || "",
       treeParent: (b ? b.parent : a.parent) ?? null,
       oldParent: a ? a.parent ?? null : null,
@@ -177,11 +191,12 @@ export function buildFormDiff(WA, WB) {
     }
   }
 
-  const totals = { added: 0, removed: 0, moved: 0, modified: 0, same: 0 };
+  const totals = { added: 0, removed: 0, moved: 0, modified: 0, same: 0, reordered: 0 };
   let propWidgets = 0, leaves = 0;
   const byCategory = {}, byKey = {};
   for (const n of nodes.values()) {
     totals[n.status]++;
+    if (n.reorder) totals.reordered++;
     if (n.props.length) {
       propWidgets++;
       leaves += n.props.length;
@@ -197,11 +212,17 @@ export function buildFormDiff(WA, WB) {
   };
 }
 
+// a widget in both versions: moved (new parent), modified (properties or child order), or the same
+function statusOf(n) {
+  if (n.status === "added" || n.status === "removed") return n.status;
+  return n.moved ? "moved" : n.props.length || n.reorder ? "modified" : "same";
+}
+
 // Per-node effective counts (self + descendants) and per-level counts, given which property
 // changes are "in scope" (category / key filters). Recomputed in the UI when filters change.
 export function computeCounts(diff, propInScope) {
   const eff = new Map();
-  const statusOf = (n) => (n.status === "modified" ? (n.props.some(propInScope) ? "modified" : "same") : n.status);
+  const statusOf = (n) => (n.status === "modified" ? (n.props.some(propInScope) || n.reorder ? "modified" : "same") : n.status);
   const levels = new Map();
   for (const id of diff.order) {
     const n = diff.nodes.get(id);
@@ -230,19 +251,38 @@ export function summarizeForm(WA, WB) {
   return { ...d.totals, propWidgets: d.propWidgets, leaves: d.leaves, byCategory: d.byCategory };
 }
 
-// the same diff with some parameters (top-level widget JSON keys) left out: a widget whose only property changes are
-// excluded counts as unchanged; added / removed / moved widgets are kept
+// Relationship changes can be left out like parameters: "parent" (a new parent) and "children" (child order)
+export const REL_KEYS = ["parent", "children"];
+
+// the same diff with some parameters (top-level widget JSON keys, or "parent" / "children") left out: a widget whose
+// only changes are excluded counts as unchanged; added / removed widgets are kept
 export function withoutKeys(diff, keys) {
   if (!diff || !keys || !keys.size) return diff;
   const nodes = new Map();
-  const totals = { added: 0, removed: 0, moved: 0, modified: 0, same: 0 };
+  const totals = { added: 0, removed: 0, moved: 0, modified: 0, same: 0, reordered: 0 };
   let propWidgets = 0, leaves = 0;
   for (const [id, n] of diff.nodes) {
     const props = n.props.filter((p) => !keys.has(p.key));
-    const status = n.status === "modified" && !props.length ? "same" : n.status;
-    nodes.set(id, { ...n, props, status, excluded: n.props.length - props.length });
-    totals[status]++;
+    const m = withoutRelations(n, keys, props);
+    nodes.set(id, { ...m, excluded: n.props.length - props.length });
+    totals[m.status]++;
+    if (m.reorder) totals.reordered++;
     if (props.length) { propWidgets++; leaves += props.length; }
   }
   return { ...diff, nodes, totals, propWidgets, leaves };
+}
+
+// one widget with excluded relationship changes dropped (properties untouched unless given)
+export function withoutRelations(n, keys, props = n.props) {
+  if (n.status === "added" || n.status === "removed") return props === n.props ? n : { ...n, props };
+  const moved = n.moved && !keys.has("parent"), reorder = keys.has("children") ? null : n.reorder;
+  return { ...n, props, moved, reorder, status: statusOf({ status: "both", moved, props, reorder }) };
+}
+
+// the diff with excluded relationship changes ("parent", "children") dropped from every widget; properties kept
+export function withoutRelationKeys(diff, keys) {
+  if (!diff || !keys || !REL_KEYS.some((k) => keys.has(k))) return diff;
+  const nodes = new Map();
+  for (const [id, n] of diff.nodes) nodes.set(id, withoutRelations(n, keys));
+  return { ...diff, nodes };
 }

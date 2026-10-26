@@ -6,6 +6,7 @@ import { FormTree } from "./Forms";
 import { OverallView } from "./Overall";
 import { segmentFiles } from "../lib/segments";
 import { SegmentVisual } from "./SegmentVisual";
+import { SegmentMerge } from "./SegmentMerge";
 import { useMore, MoreRows } from "../app/More";
 import "./segments.css";
 
@@ -210,9 +211,16 @@ function SegmentDetail({ r, picked, labels, setDrill, aspect, setAspect, renderR
   const model = r.models[cur];
   const count = (k) => (k === "files" || k === "visual" ? null : r.changes[k]);
   const [O, C, N] = labels;
+  const [merging, setMerging] = useState(false);
+  // moving KBZ's changes needs the base, the customisation and at least one R26 copy
+  const canMerge = !!(N && r.copies[0] && r.copies[1] && r.copies[2]);
   return (
     <div>
-      <button className="btn ghost" onClick={() => setDrill(null)} style={{ marginBottom: 10 }}>← All templates</button>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+        <button className="btn ghost" onClick={() => setDrill(null)}>← All templates</button>
+        {canMerge && <button className="btn" style={{ marginLeft: "auto" }} onClick={() => setMerging(true)} title={`Choose ${C}'s changes to carry onto the ${N} copies and write the merged template folder`}>⇢ Move {C} changes to {N}</button>}
+      </div>
+      {merging && <SegmentMerge r={r} picked={picked} labels={labels} x={x} onClose={() => setMerging(false)} />}
       {excl && excl.size > 0 && <div className="sx-note">Not counted as a change here: <b>{[...excl].map(keyName).join(", ")}</b> — set with “Exclude parameters” on the template list.</div>}
       <h2 className="page">{r.name} <span className={"cstat cs-" + r.status} style={{ fontSize: 13, verticalAlign: "middle" }}>{statusLabel(r.status, labels)}</span></h2>
       <div className="crumb">Segment template · {r.channel}{r.widgetCounts ? " · " + labels.filter((l) => r.present[l]).map((l) => `${l} ${r.widgetCounts[l]} widgets`).join(" · ") : ""}</div>
@@ -326,16 +334,17 @@ function adjust(r, excl) {
     if (!list || !s) continue;
     const pw = list.filter((ks) => ks.some((k) => !excl.has(k))).length;
     if (pair === "01") hidden = s.propWidgets - pw;
-    structure[pair] = { ...s, propWidgets: pw };
+    structure[pair] = { ...s, propWidgets: pw, moved: excl.has("parent") ? 0 : s.moved, reordered: excl.has("children") ? 0 : s.reordered || 0 };
   }
   const s = structure["01"];
-  const st = s ? s.added + s.removed + s.moved + s.propWidgets : 0;
+  const st = s ? s.added + s.removed + s.moved + s.propWidgets + (s.reordered || 0) : 0;
   const changes = { ...r.changes, structure: st };
   const total = st + changes.controller + changes.actions;
   const status = r.status === "customised" || r.status === "unchanged" ? (total ? "customised" : "unchanged") : r.status;
   return { ...r, structure, changes, total, status, hidden, statusBefore: r.status };
 }
 const FRIENDLY = {
+  parent: "new parent", children: "child order",
   _skin_: "skin", focusskin: "focus skin", hoverskin: "hover skin", disabledSkins: "disabled skins", pressedskin: "pressed skin", shellCSS: "custom CSS",
   _width_: "width", _height_: "height", _left_: "left", _top_: "top", _right_: "right", _bottom_: "bottom", centerx: "center X", centery: "center Y",
   minwidth: "min width", maxwidth: "max width", minheight: "min height", maxheight: "max height", zindex: "z-index", _padding_: "padding", paddinginpixel: "padding in px",
@@ -349,6 +358,7 @@ const GROUPS = [
   ["Position & size", (k) => /^(_left_|_top_|_right_|_bottom_|_width_|_height_|centerx|centery|min(width|height)|max(width|height)|zindex|_padding_|paddinginpixel|_margin_|contentalignment|layouttype|autogrowmode|reverselayoutdirection)$/.test(k)],
   ["Text", (k) => /^(_text_|texti18n|tooltip|tooltipi18n|_placeholder_|placeholderi18n)$/.test(k)],
   ["Visibility", (k) => k === "isvisible"],
+  ["Relationships", (k) => k === "parent" || k === "children"],
   ["Events", (k) => /^ide_on/.test(k)],
   ["Design-time settings", (k) => /^(context|breakpointInfo|currentBreakpoint|kuid|containerId|currentLocale|snapgridsize|snaptogrid|iscustomlayout)$/.test(k)],
 ];
@@ -360,7 +370,7 @@ function impact(raw, set) {
   for (const r of raw) {
     const list = r.wkeys && r.wkeys["01"];
     if (!list) continue;
-    const gone = list.filter((ks) => ks.every((k) => set.has(k))).length;
+    const gone = list.filter((ks) => ks.every((k) => set.has(k))).length + (r.rel && r.rel["01"] ? (set.has("parent") ? r.rel["01"].moved : 0) + (set.has("children") ? r.rel["01"].reordered : 0) : 0);
     widgets += gone;
     if (gone && r.status === "customised") { const a = adjust(r, set); if (a.status === "unchanged") templates++; }
   }
@@ -382,6 +392,12 @@ function ExcludeBar({ raw, excl, setExcl, labels }) {
         const x = m.get(k);
         if (pair === "01") { x.w01++; if (!seen.has(k)) { seen.add(k); x.t01++; } } else x.other++;
       }
+    }
+    // relationship changes: widgets with a new parent, containers whose children changed order
+    for (const [k, f] of [["parent", "moved"], ["children", "reordered"]]) {
+      const x = { k, cat: "relationships", w01: 0, t01: 0, other: 0 };
+      for (const r of raw) for (const [pair, v] of Object.entries(r.rel || {})) { const n = v[f] || 0; if (!n) continue; if (pair === "01") { x.w01 += n; x.t01++; } else x.other += n; }
+      if (x.w01 || x.other) m.set(k, x);
     }
     return [...m.values()].sort((a, b) => b.w01 - a.w01 || b.other - a.other || a.k.localeCompare(b.k));
   }, [raw]);

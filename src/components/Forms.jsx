@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { WidgetDialog } from "./WidgetDialog";
 import { useMore, MoreRows } from "../app/More";
 import { background, bgTurn } from "../lib/jobs";
-import { idSetDiff, buildFormDiff, computeCounts, summarizeForm, CATEGORIES, CATEGORY_LABELS } from "../lib/forms";
+import { idSetDiff, buildFormDiff, computeCounts, summarizeForm, withoutRelationKeys, CATEGORIES, CATEGORY_LABELS } from "../lib/forms";
 
 const PAIRS = [[0, 1], [0, 2], [1, 2]]; // positions in labels: base·custom, base·new, custom·new
 const MARK = { added: "+", removed: "−", moved: "↔", modified: "~", same: "" };
@@ -210,7 +210,9 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
   const [dlg, setDlg] = useState(null);
   const [ia, ib] = PAIRS[pairIdx];
   const A = labels[ia], B = labels[ib];
-  const [data, setData] = useState(null);
+  const [diff, setData] = useState(null);
+  // excluded relationship changes ("parent", "children") no longer make a widget changed
+  const data = useMemo(() => withoutRelationKeys(diff, excludeKeys), [diff, excludeKeys]);
   const [bad, setBad] = useState(0);
   const [expanded, setExpanded] = useState(new Set());
   const [changesOnly, setChangesOnly] = useState(true);
@@ -293,6 +295,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
       const n = data.nodes.get(id), e = eff(id);
       if (e.status === "added" || e.status === "removed" || e.status === "moved")
         out.push([formName(formKey), n.id, n.wType, e.status, n.oldParent || "", n.newParent || "", n.depth, "", "", "", ""]);
+      if (n.reorder) out.push([formName(formKey), n.id, n.wType, "child order", n.oldParent || "", n.newParent || "", n.depth, "Relationships", "children", n.reorder.old.join(" "), n.reorder.new.join(" ")]);
       for (const p of n.props.filter(propInScope))
         out.push([formName(formKey), n.id, n.wType, "property", n.oldParent || "", n.newParent || "", n.depth, CATEGORY_LABELS[p.category],
           p.path, p.old === undefined ? "" : showGlyphs(JSON.stringify(p.old)), p.new === undefined ? "" : showGlyphs(JSON.stringify(p.new))]);
@@ -322,6 +325,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
     for (const n of data.nodes.values()) for (const p of n.props) if (!excludeKeys.has(p.key)) c[p.category] = (c[p.category] || 0) + 1;
     return c;
   }, [data, excludeKeys]);
+  const reordered = data ? [...data.nodes.values()].filter((n) => n.reorder).length : 0;
   const topKeys = data ? Object.entries(data.byKey).filter(([k]) => !(excludeKeys && excludeKeys.has(k))).sort((x, y) => y[1] - x[1]).slice(0, 10) : [];
   const maxLevel = counts ? Math.max(1, ...counts.levels.map((l) => l.added + l.removed + l.moved + l.modified)) : 1;
 
@@ -345,6 +349,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
             <div className="card"><div className="n" style={{ color: "var(--add-mark)" }}>+{T.added}</div><div className="l">added</div></div>
             <div className="card"><div className="n" style={{ color: "var(--del-mark)" }}>−{T.removed}</div><div className="l">removed</div></div>
             <div className="card"><div className="n" style={{ color: "var(--mov-mark)" }}>{T.moved}</div><div className="l">moved (new parent)</div></div>
+            <div className="card"><div className="n" style={{ color: "var(--mov-mark)" }}>⇅ {reordered}</div><div className="l">containers with children in another order</div></div>
             <div className="card"><div className="n" style={{ color: "var(--chg-mark)" }}>~{T.propWidgets}</div><div className="l">widgets with property changes · {T.entries} changes</div></div>
           </div>
 
@@ -407,7 +412,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
             <span className="chip" onClick={collapseAll}>collapse all</span>
             <span className="spacer" />
             <span className="legend">
-              <span className="lg added">+ added</span> <span className="lg removed">− removed</span> <span className="lg moved">↔ moved</span> <span className="lg modified">~ properties</span>
+              <span className="lg added">+ added</span> <span className="lg removed">− removed</span> <span className="lg moved">↔ new parent</span> <span className="lg moved">⇅ child order</span> <span className="lg modified">~ properties</span>
             </span>
             <button className="btn" onClick={exportCsv}>Export (CSV)</button>
           </div>
@@ -435,6 +440,8 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
                     <span className={"tid" + (previewKind ? " wd-open" : "")} title={previewKind ? "Preview & edit in R21 · KBZ · R26" : undefined} onClick={previewKind ? (ev) => { ev.stopPropagation(); setSel(n.id); setDlg(n.id); } : undefined}>{n.id}</span>
                     <span className="wtag">{n.wType}</span>
                     {e.props > 0 && <span className="pbadge" title={`${e.props} property change(s)`}>~{e.props}</span>}
+                    {n.reorder && <span className="pbadge rel" title={`children in another order in ${B}`}>⇅</span>}
+                    {n.status === "moved" && <span className="pbadge rel" title={`parent ${n.oldParent} → ${n.newParent}`}>↔ {n.newParent}</span>}
                     {!open && kids && (e.added || e.removed || e.modified) ? (
                       <span className="sub-badge">
                         {e.added ? <b className="a">+{e.added}</b> : null}
@@ -465,6 +472,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
                       <tr><td>Children</td><td>{selNode.children.length}</td></tr>
                     </tbody>
                   </table>
+                  {(selNode.moved || selNode.reorder) && <Relationships n={selNode} A={A} B={B} />}
                   {excludeKeys && selNode.props.some((p) => excludeKeys.has(p.key)) && <p className="tag" style={{ marginTop: 8 }}>{selNode.props.filter((p) => excludeKeys.has(p.key)).length} change(s) in excluded parameters not shown ({[...new Set(selNode.props.filter((p) => excludeKeys.has(p.key)).map((p) => p.key))].join(", ")}).</p>}
                   {selNode.props.filter((p) => !(excludeKeys && excludeKeys.has(p.key))).length === 0 ? (
                     <p className="tag" style={{ marginTop: 10 }}>
@@ -518,6 +526,29 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// a widget's relationship changes: its parent, and the order of the children both versions have
+function Relationships({ n, A, B }) {
+  return (
+    <div className="pgroup">
+      <div className="pgtitle">Relationships</div>
+      <table className="pdiff">
+        <thead><tr><th>Relation</th><th>{A}</th><th>{B}</th></tr></thead>
+        <tbody>
+          {n.moved && <tr><td className="mono">parent</td><td className="mono old">{n.oldParent || "—"}</td><td className="mono new">{n.newParent || "—"}</td></tr>}
+          {n.reorder && (
+            <tr>
+              <td className="mono">child order</td>
+              <td className="mono old"><ol className="relorder">{n.reorder.old.map((c, i) => <li key={c} className={n.reorder.new[i] !== c ? "mv" : ""}>{c}</li>)}</ol></td>
+              <td className="mono new"><ol className="relorder">{n.reorder.new.map((c, i) => <li key={c} className={n.reorder.old[i] !== c ? "mv" : ""}>{c}</li>)}</ol></td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      {n.reorder && <div className="tag" style={{ marginTop: 4 }}>Only children both versions have are listed; highlighted ones changed place.</div>}
     </div>
   );
 }
