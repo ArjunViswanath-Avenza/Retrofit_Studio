@@ -10,7 +10,7 @@ export function VersionNames({ ws, value, onChange, compact }) {
     <div className={"vnames" + (compact ? " compact" : "")}>
       <div className="vnhead">
         <b>Version names</b>
-        <span className="tag">Shown everywhere in this workspace — rename to match your project.</span>
+        <span className="tag">{ws === "fabric" ? "Shown everywhere in the Fabric comparison" : "Shown in every tool"} — rename to match your project.</span>
         {!isDefault && <button type="button" className="btn ghost tiny" onClick={() => onChange(DEFAULT_NAMES[ws])}>Reset to {DEFAULT_NAMES[ws].map((x) => x.name).join(" · ")}</button>}
       </div>
       <div className="vngrid" style={{ gridTemplateColumns: `repeat(${value.length}, minmax(0, 1fr))` }}>
@@ -36,7 +36,7 @@ export function VersionNamesPanel({ ws, value, onApply, onClose }) {
     <div className="vnpanel" role="dialog" aria-label="Version names">
       <VersionNames ws={ws} value={draft} onChange={setDraft} compact />
       <div className="vnactions">
-        <span className="tag">Applying re-runs this workspace's comparisons with the new names; uploaded folders stay loaded.</span>
+        <span className="tag">Applying re-runs the open comparisons with the new names; loaded folders stay loaded.</span>
         <button type="button" className="btn ghost" onClick={onClose}>Cancel</button>
         <button type="button" className="btn" disabled={!!err} onClick={() => { onApply(clean(draft)); onClose(); }}>Apply names</button>
       </div>

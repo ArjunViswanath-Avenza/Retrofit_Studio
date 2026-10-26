@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { WidgetDialog } from "./WidgetDialog";
+import { useMore, MoreRows } from "../app/More";
+import { background, bgTurn } from "../lib/jobs";
 import { idSetDiff, buildFormDiff, computeCounts, summarizeForm, CATEGORIES, CATEGORY_LABELS } from "../lib/forms";
 
 const PAIRS = [[0, 1], [0, 2], [1, 2]]; // positions in labels: base·custom, base·new, custom·new
@@ -40,9 +42,9 @@ function PairSelector({ pairIdx, setPairIdx, labels }) {
 }
 
 /* =========================================================== view + background scan =========================================================== */
-export function FormsView({ picked, labels, scan, setScan }) {
+// open / setOpen: the opened form (kept in the page address by the tool)
+export function FormsView({ picked, labels, scan, setScan, open, setOpen }) {
   const [pairIdx, setPairIdx] = useState(0);
-  const [open, setOpen] = useState(null);
   const started = useRef(new Set());
   const [A, B] = PAIRS[pairIdx].map((i) => labels[i]);
   const pairKey = A + "|" + B;
@@ -55,14 +57,18 @@ export function FormsView({ picked, labels, scan, setScan }) {
     started.current.add(pairKey);
     const keys = [...ma.keys()].filter((k) => mb.has(k));
     setScan((s) => ({ ...s, [pairKey]: { done: 0, total: keys.length, forms: {} } }));
-    (async () => {
+    const job = background(`FormForge · read widget properties ${A} vs ${B}`, async (signal) => {
+      let found = {};
+      const flush = (n) => { const f = found; found = {}; setScan((c) => ({ ...c, [pairKey]: { ...c[pairKey], done: n, forms: { ...c[pairKey].forms, ...f } } })); };
       for (let i = 0; i < keys.length; i++) {
         const k = keys[i];
         const [ra, rb] = await Promise.all([readWidgets(ma.get(k)), readWidgets(mb.get(k))]);
-        const s = summarizeForm(ra.W, rb.W);
-        setScan((c) => ({ ...c, [pairKey]: { ...c[pairKey], done: i + 1, forms: { ...c[pairKey].forms, [k]: s } } }));
+        found[k] = summarizeForm(ra.W, rb.W);
+        if (i % 12 === 11) { flush(i + 1); await bgTurn(signal); }
       }
-    })();
+      flush(keys.length);
+    });
+    void job; // keeps reading after the page is left, so the list is complete when it is opened again
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pairKey]);
 
@@ -115,6 +121,7 @@ function FormsList({ picked, labels, pairIdx, setPairIdx, openForm, scanEntry })
   const setSortKey = (key) => setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
   const arrow = (key) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
   const STATUS_PILL = { structure: "Modified", properties: "Props", "new form": "Added", "removed form": "Removed" };
+  const page = useMore(view);
 
   return (
     <div>
@@ -173,7 +180,7 @@ function FormsList({ picked, labels, pairIdx, setPairIdx, openForm, scanEntry })
             </tr>
           </thead>
           <tbody>
-            {view.map((r) => (
+            {page.shown.map((r) => (
               <tr key={r.key} className="clickable" style={{ cursor: "pointer" }} onClick={() => openForm(r.key)}>
                 <td><b style={{ color: "var(--accent)" }}>{r.name}</b><div className="tag">{r.module}</div></td>
                 {r.sizes.map((s, k) => <td key={k} style={{ textAlign: "center" }}>{s == null ? "–" : s}</td>)}
@@ -185,6 +192,7 @@ function FormsList({ picked, labels, pairIdx, setPairIdx, openForm, scanEntry })
                 <td>{r.status === "pending" ? <span className="tag">scanning…</span> : <span className={"pill " + (STATUS_PILL[r.status] || "")}>{r.status}</span>}</td>
               </tr>
             ))}
+            <MoreRows {...page} shown={page.shown.length} cols={labels.length + 4} />
           </tbody>
         </table>
       </div>
@@ -272,6 +280,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, counts, expanded, changesOnly, matchSet]);
+  const treePage = useMore(rows, 300);
 
   const toggle = (id) => setExpanded((s) => { const c = new Set(s); if (c.has(id)) c.delete(id); else c.add(id); return c; });
   const expandAll = () => data && setExpanded(new Set([...data.nodes.keys(), "__detached__"]));
@@ -407,7 +416,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
           <div className="treewrap">
             <div className="ftree">
               {rows.length === 0 && <p className="note" style={{ padding: 12 }}>No differences between {A} and {B} for this form under the current filters{changesOnly ? " (turn off “changes only” to browse the full tree)" : ""}.</p>}
-              {rows.map((r, i) => {
+              {treePage.shown.map((r, i) => {
                 if (r.group) return (
                   <div key={"g" + i} className="trow group" onClick={() => toggle("__detached__")}>
                     <span className={"tchev" + (expanded.has("__detached__") ? " open" : "")}>▶</span>
@@ -436,6 +445,7 @@ export function FormTree({ formKey, picked, labels, pairIdx, setPairIdx, back, g
                   </div>
                 );
               })}
+              <MoreRows {...treePage} shown={treePage.shown.length} />
             </div>
 
             <div className="tdetail">

@@ -8,6 +8,7 @@
 // which of its templates) stands behind each key.
 import { extract, extractComponent } from "./analyzer.js";
 import { buildFormDiff } from "./forms.js";
+import { bgTurn, yieldNow, pool } from "./jobs.js";
 import { aspect, readWidgetJson, actionLabels } from "./components.js";
 
 const STRUCT_PAIRS = [[0, 1], [0, 2], [1, 2]];
@@ -46,9 +47,10 @@ export async function analyzeSegments(picked, labels, onProgress) {
   const L = labels.slice(0, n);
   const keys = [...new Set(picked.slice(0, n).flatMap((p) => (p && p.segs ? [...p.segs.keys()] : [])))]
     .sort((a, b) => segName(a).toLowerCase().localeCompare(segName(b).toLowerCase()) || a.localeCompare(b));
-  const results = [];
+  const results = new Array(keys.length);
+  let done = 0;
   onProgress({ done: 0, total: keys.length, running: true });
-  for (let k = 0; k < keys.length; k++) {
+  await pool(keys.length, 8, async (k) => {
     const key = keys[k];
     const copies = [];
     for (let i = 0; i < n; i++) copies.push(await segCopy(picked[i], key));
@@ -88,21 +90,23 @@ export async function analyzeSegments(picked, labels, onProgress) {
     for (const m of Object.values(r.models)) if (m) for (const x of Object.values(m.members)) if (x.bucket === "2") r.conflicts++;
     r.status = !present[L[0]] && present[L[1]] ? "new" : present[L[0]] && !present[L[1]] ? "removed"
       : !present[L[0]] && !present[L[1]] ? "absent" : r.total ? "customised" : "unchanged";
-    results.push(r);
-    if (k % 6 === 0) { onProgress({ done: k + 1, total: keys.length, running: true }); await new Promise((res) => setTimeout(res)); }
-  }
+    results[k] = r;
+    if (++done % 6 === 0) { onProgress({ done, total: keys.length, running: true }); await yieldNow(); }
+  });
   onProgress({ done: keys.length, total: keys.length, running: false });
   return results;
 }
 
 // files of every template for the Overall comparison: key -> Map(file id -> File) (widget JSONs, controller, actions)
-// only: limit to these template keys (one template's Files tab)
-export async function segmentFiles(picked, only) {
+// only: limit to these template keys (one template's Files tab); signal: run as a background job (lib/jobs.js)
+export async function segmentFiles(picked, only, signal) {
   const out = [];
+  let n = 0;
   for (const p of picked) {
     if (!p || !p.segs) { out.push(null); continue; }
     const m = new Map();
     for (const key of only || p.segs.keys()) {
+      if (signal && ++n % 25 === 0) await bgTurn(signal);
       const c = await segCopy(p, key);
       if (!c) continue;
       const files = new Map();
@@ -125,12 +129,13 @@ const field = (f) => (f === "template" ? "row (set in the data)" : /^row/i.test(
 // controllers/<ch>/<Module…>/<frmX>Controller/<frmX>Controller.js -> forms key <ch>/<Module…>/<frmX>.sm
 const formOfCtrl = (k) => { const s = k.split("/"); return s.length >= 4 ? `${s[0]}/${s.slice(1, -2).join("/")}/${s[s.length - 2].replace(/Controller$/, "")}.sm` : null; };
 
-export async function segmentUsage(picked, onProgress) {
+// signal: runs as a background job — pauses while the open page works, stops when the comparison closes
+export async function segmentUsage(picked, onProgress, signal) {
   const all = [];
   const total = picked.reduce((t, p) => t + (p && p.segs ? [...(p.forms || new Map()).values()].reduce((x, m) => x + m.size, 0) + (p.controllers ? p.controllers.size : 0) + (p.mvc ? p.mvc.size : 0)
     + [...(p.comps || new Map()).values()].reduce((x, m) => x + [...m.keys()].filter((r) => /\.(js|json)$/i.test(r)).length, 0) : 0), 0);
   let done = 0;
-  const tick = async () => { onProgress({ done, total, running: true }); await new Promise((r) => setTimeout(r)); };
+  const tick = async () => { onProgress({ done, total, running: true }); if (signal) await bgTurn(signal); else await yieldNow(); };
   for (const p of picked) {
     if (!p || !p.segs) { all.push(null); continue; }
     // the ids a reference can use: root flex and kuid of every template in this version
@@ -158,6 +163,7 @@ export async function segmentUsage(picked, onProgress) {
         const texts = await Promise.all(list.slice(i, i + 256).map(([, f]) => f.text()));
         texts.forEach((t, j) => { if (!t.includes("emplate")) return; for (const m of t.matchAll(REF_JSON)) add(m[2], { kind: "form", where: fk, app, via: list[i + j][0], field: field(m[1]) }); });
         done += texts.length;
+        if (signal) await bgTurn(signal);
       }
       if (done % 2000 < 256) await tick();
     }

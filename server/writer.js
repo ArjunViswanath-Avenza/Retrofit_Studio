@@ -2,15 +2,17 @@
 // The browser writes the converted projects into a picked folder (File System Access API); files it refuses — the
 // project.manifest files that link a composite app have been seen to go missing that way — are re-sent here and
 // written with the file system. Writes stay inside the given folder, and only into project folders that already
-// exist there.
+// exist there. Requests are answered only when they come to localhost (server/local.js).
 import fs from "node:fs";
 import path from "node:path";
+import { isLocal, refuse } from "./local.js";
 
 export function writerPlugin() {
   return {
     name: "retrofit-writer",
     configureServer(server) {
       server.middlewares.use("/api/write-file", (req, res) => {
+        if (!isLocal(req)) return refuse(res, "write service");
         if (req.method !== "POST") { res.statusCode = 405; res.end(); return; }
         const chunks = [];
         req.on("data", (c) => chunks.push(c));

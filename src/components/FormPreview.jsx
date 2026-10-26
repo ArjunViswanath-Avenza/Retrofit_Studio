@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { renderPreview, previewAssets, currentBreakpoint } from "../lib/preview";
 import { looseJson, LAYER_LABEL } from "../lib/blueprint";
 import { cachedTrace, FlowStory, Code, stepText } from "./Blueprint";
+import { yieldNow } from "../lib/jobs";
 
 const nf = (n) => Number(n || 0).toLocaleString("en-US");
 const HEIGHTS = [768, 900, 1080];
@@ -105,7 +106,7 @@ export function FormPreview({ idx, f, A, cache, openFlow }) {
       for (let i = 0; i < entries.length; i++) {
         if (!alive) return;
         out[entries[i].id] = widgetSteps(await cachedTrace(idx, cache, entries[i], f), f.name);
-        if (i % 8 === 7) { setProg({ done: i + 1, total: entries.length }); await new Promise((r) => setTimeout(r)); }
+        if (i % 8 === 7) { setProg({ done: i + 1, total: entries.length }); await yieldNow(); }
       }
       if (alive) { setTraces(out); setProg(null); }
     })();

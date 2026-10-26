@@ -9,6 +9,7 @@
 // Every aspect except structure is reduced to the {members} shape so buildModel/classify apply unchanged.
 import { extract, extractComponent, buildModel } from "./analyzer.js";
 import { summarizeForm } from "./forms.js";
+import { yieldNow, pool } from "./jobs.js";
 
 // "<root>/userwidgets/<component>/<rel>" -> { key: component folder, rel }
 export function compPath(relPath) {
@@ -157,9 +158,10 @@ export async function analyzeComponents(maps, labels, onProgress) {
   const n = maps[2] ? 3 : 2;
   const L = labels.slice(0, n);
   const keys = [...new Set(maps.slice(0, n).flatMap((m) => (m ? [...m.keys()] : [])))].sort((a, b) => compName(a).localeCompare(compName(b)) || a.localeCompare(b));
-  const results = [];
+  const results = new Array(keys.length);
+  let done = 0;
   onProgress({ done: 0, total: keys.length, running: true });
-  for (let k = 0; k < keys.length; k++) {
+  await pool(keys.length, 8, async (k) => { // several at once: their file reads go out together
     const key = keys[k];
     const parts = maps.slice(0, n).map((m) => partsOf(key, m && m.get(key)));
     const present = Object.fromEntries(L.map((l, i) => [l, !!parts[i]]));
@@ -201,9 +203,9 @@ export async function analyzeComponents(maps, labels, onProgress) {
     for (const m of Object.values(r.models)) if (m) for (const x of Object.values(m.members)) if (x.bucket === "2") r.conflicts++;
     r.status = !present[L[0]] && present[L[1]] ? "new" : present[L[0]] && !present[L[1]] ? "removed"
       : !present[L[0]] && !present[L[1]] ? "absent" : r.total ? "customised" : "unchanged";
-    results.push(r);
-    if (k % 4 === 0) { onProgress({ done: k + 1, total: keys.length, running: true }); await new Promise((res) => setTimeout(res)); }
-  }
+    results[k] = r;
+    if (++done % 4 === 0) { onProgress({ done, total: keys.length, running: true }); await yieldNow(); }
+  });
   onProgress({ done: keys.length, total: keys.length, running: false });
   return results;
 }

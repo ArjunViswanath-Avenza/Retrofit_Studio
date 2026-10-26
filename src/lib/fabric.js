@@ -26,6 +26,7 @@
 //   format      differences produced by the Fabric version that wrote the export, not by anyone's change
 //               (isExtended/customOperation flags, param order numbers, etags, designer layout, mirrored mapperData)
 // A property present on one side only with a default value ("", false, null, [], {}) is treated as equal.
+import { yieldNow } from "./jobs.js";
 
 // ---------------------------------------------------------------- minimal XML parser
 const ENT = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'" };
@@ -39,22 +40,26 @@ export function parseXml(src) {
   const stack = [root];
   let i = 0;
   const n = src.length;
+  // just past the next `what` from `from` — or the end when it is missing (an unclosed comment, tag or quote used to
+  // send the parser back to the start of the file, forever)
+  const past = (what, from) => { const e = src.indexOf(what, from); return e < 0 ? n : e + what.length; };
   while (i < n) {
     const lt = src.indexOf("<", i);
     if (lt < 0) { stack[stack.length - 1].text += decode(src.slice(i)); break; }
     if (lt > i) stack[stack.length - 1].text += decode(src.slice(i, lt));
-    if (src.startsWith("<?", lt)) { i = src.indexOf("?>", lt) + 2; continue; }
-    if (src.startsWith("<!--", lt)) { i = src.indexOf("-->", lt) + 3; continue; }
-    if (src.startsWith("<![CDATA[", lt)) { const e = src.indexOf("]]>", lt); stack[stack.length - 1].text += src.slice(lt + 9, e); i = e + 3; continue; }
-    if (src.startsWith("<!", lt)) { i = src.indexOf(">", lt) + 1; continue; }
-    if (src[lt + 1] === "/") { stack.pop(); i = src.indexOf(">", lt) + 1; continue; }
+    if (src.startsWith("<?", lt)) { i = past("?>", lt); continue; }
+    if (src.startsWith("<!--", lt)) { i = past("-->", lt); continue; }
+    if (src.startsWith("<![CDATA[", lt)) { const e = past("]]>", lt); stack[stack.length - 1].text += src.slice(lt + 9, Math.max(lt + 9, e - 3)); i = e; continue; }
+    if (src.startsWith("<!", lt)) { i = past(">", lt); continue; }
+    if (src[lt + 1] === "/") { if (stack.length > 1) stack.pop(); i = past(">", lt); continue; }
     let j = lt + 1;
     while (j < n && !/[\s/>]/.test(src[j])) j++;
     const el = { tag: src.slice(lt + 1, j), attrs: {}, children: [], text: "" };
     let selfClose = false;
     for (;;) {
       while (j < n && /\s/.test(src[j])) j++;
-      if (src[j] === "/") { selfClose = true; j = src.indexOf(">", j) + 1; break; }
+      if (j >= n) break;
+      if (src[j] === "/") { selfClose = true; j = past(">", j); break; }
       if (src[j] === ">") { j++; break; }
       let k = j;
       while (k < n && !/[\s=/>]/.test(src[k])) k++;
@@ -64,9 +69,16 @@ export function parseXml(src) {
       k++;
       while (k < n && /\s/.test(src[k])) k++;
       const q = src[k];
+      if (q !== '"' && q !== "'") { // unquoted value: up to the next space or the tag's end
+        let e = k;
+        while (e < n && !/[\s>]/.test(src[e])) e++;
+        el.attrs[name] = decode(src.slice(k, e));
+        j = Math.max(e, k + 1);
+        continue;
+      }
       const end = src.indexOf(q, k + 1);
-      el.attrs[name] = decode(src.slice(k + 1, end));
-      j = end + 1;
+      el.attrs[name] = decode(src.slice(k + 1, end < 0 ? n : end));
+      j = end < 0 ? n : end + 1;
     }
     stack[stack.length - 1].children.push(el);
     if (!selfClose) stack.push(el);
@@ -403,7 +415,7 @@ export async function analyzeFabric(exports, labels, onProgress) {
       r.counts = { logic: 0, environment: 0, format: 0 };
     }
     units.push(r);
-    if (i % 25 === 0) { onProgress({ done: i + 1, total: keys.length, running: true }); await new Promise((res) => setTimeout(res)); }
+    if (i % 25 === 0) { onProgress({ done: i + 1, total: keys.length, running: true }); await yieldNow(); }
   }
   // resolve references to unit keys (Integration first, then Orchestration)
   const byOp = new Map();

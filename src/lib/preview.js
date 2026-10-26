@@ -80,7 +80,7 @@ async function blobUrl(idx, A, rel) {
   if (!rel) return null;
   if (A.blobs.has(rel)) return A.blobs.get(rel);
   const f = idx.project.files.get(rel);
-  const u = f ? URL.createObjectURL(f) : null;
+  const u = f ? f.url || URL.createObjectURL(f) : null; // url: a folder opened through the local file service
   A.blobs.set(rel, u);
   return u;
 }

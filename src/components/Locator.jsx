@@ -7,6 +7,7 @@ import { locateForm } from "../lib/locator";
 import { widgetInfo } from "../lib/preview";
 import { Code } from "./Blueprint";
 import "./locator.css";
+import { yieldNow } from "../lib/jobs";
 
 const nf = (n) => Number(n || 0).toLocaleString("en-US");
 const short = (rel) => (rel || "").split("/").slice(-2).join("/");
@@ -255,7 +256,7 @@ export function ProjectLocator({ idx, cache, openFormTab, openFormFlow }) {
         setCurrent(k);
         try { await locate(idx, cache, k); } catch (e) { errors.current.push(`${k}: ${e.message}`); cache.set("loc:" + k, null); }
         setDone((n) => n + 1);
-        await new Promise((r) => setTimeout(r));
+        await yieldNow();
       }
       if (alive) { setRunning(false); setCurrent(null); }
     })();

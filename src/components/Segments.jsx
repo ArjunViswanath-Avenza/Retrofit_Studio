@@ -6,6 +6,7 @@ import { FormTree } from "./Forms";
 import { OverallView } from "./Overall";
 import { segmentFiles } from "../lib/segments";
 import { SegmentVisual } from "./SegmentVisual";
+import { useMore, MoreRows } from "../app/More";
 import "./segments.css";
 
 const ASPECT_TABS = [["visual", "Visual"], ["structure", "Structure"], ["controller", "Controller"], ["actions", "Actions"], ["files", "Files (side by side)"]];
@@ -25,8 +26,8 @@ export function SegmentsView(props) {
   const [excl, setExcl] = useState(() => { try { return new Set(JSON.parse(localStorage.getItem("rs.segExclude") || "[]")); } catch { return new Set(); } });
   useEffect(() => { try { localStorage.setItem("rs.segExclude", JSON.stringify([...excl])); } catch { /* per-viewer convenience only */ } }, [excl]);
   const bulk = useMemo(() => (props.bulk && excl.size ? { results: props.bulk.results.map((r) => adjust(r, excl)) } : props.bulk), [props.bulk, excl]);
-  props = { ...props, bulk, raw: props.bulk ? props.bulk.results : [], excl, setExcl };
-  if (drill != null && bulk) return <SegmentDetail {...props} r={bulk.results[drill]} />;
+  const all = { ...props, bulk, raw: props.bulk ? props.bulk.results : [], excl, setExcl };
+  if (drill != null && bulk) return <SegmentDetail {...all} r={bulk.results[drill]} />;
   return (
     <div>
       <h2 className="page">TemplateTwin · Segment template retrofit</h2>
@@ -36,7 +37,7 @@ export function SegmentsView(props) {
           <p className="note">Reading &amp; comparing segment templates… {analyzing.done}/{analyzing.total}</p>
           <div className="progress"><div style={{ width: (analyzing.total ? (analyzing.done / analyzing.total) * 100 : 0) + "%" }} /></div>
         </div>
-      ) : bulk ? <SegDashboard {...props} /> : <p className="note">Preparing…</p>}
+      ) : bulk ? <SegDashboard {...all} /> : <p className="note">Preparing…</p>}
     </div>
   );
 }
@@ -103,6 +104,7 @@ function SegDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usag
     out.sort((x, y) => { const a = val(x), b = val(y); return (a < b ? -1 : a > b ? 1 : 0) * dir || x.r.name.localeCompare(y.r.name); });
     return out;
   }, [R, q, show, loc, sort, report, usage]); // eslint-disable-line react-hooks/exhaustive-deps
+  const page = useMore(rows);
 
   const toggle = (st) => setShow((s) => { const n = new Set(s); if (n.has(st)) n.delete(st); else n.add(st); return n; });
   const th = (k, t) => <th key={k} className="sortable" onClick={() => setSort(([sk, d]) => [k, sk === k ? -d : k === "name" ? 1 : -1])}>{t}{sort[0] === k ? (sort[1] < 0 ? " ▼" : " ▲") : ""}</th>;
@@ -168,7 +170,7 @@ function SegDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usag
           </tr>
         </thead>
         <tbody>
-          {rows.slice(0, 1500).map(({ r, i }) => {
+          {page.shown.map(({ r, i }) => {
             const x = rowOf(r);
             return (
               <tr key={r.key} className="clickable" onClick={() => setDrill(i)} style={{ cursor: "pointer" }}>
@@ -188,10 +190,10 @@ function SegDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usag
               </tr>
             );
           })}
+          <MoreRows {...page} shown={page.shown.length} cols={20} />
           {!rows.length && <tr><td colSpan={20} className="note">No templates match the filters.</td></tr>}
         </tbody>
       </table>
-      {rows.length > 1500 && <p className="note">First 1,500 shown — narrow the search to see the rest.</p>}
     </div>
   );
 }

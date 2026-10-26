@@ -1,1033 +1,130 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, memo, lazy, Suspense } from "react";
 import "./App.css";
-import { extractComponent, extractModule, buildModel, mvcKind } from "./lib/analyzer";
-import { TwoCol, ThreeCol } from "./components/DiffView";
-import { Checklist } from "./components/Checklist";
-import { FormsView } from "./components/Forms";
-import { OverallView } from "./components/Overall";
-import { ComponentsView } from "./components/Components";
-import { analyzeComponents } from "./lib/components";
-import { SegmentsView } from "./components/Segments";
-import { analyzeSegments, segmentUsage, segmentFiles } from "./lib/segments";
-import { scanFolder } from "./lib/scan";
-import { MicroAppUpload, MicroAppMap } from "./components/MicroApps";
-import { scanMicroApps, alignMicroApps, missingMicroApps, channelScan, CHANNELS } from "./lib/microapps";
-import { LoomSync, FabricPickers } from "./components/Fabric";
-import { JarView } from "./components/Jars";
-import { resetDecompile } from "./lib/jars";
-import { scanFabricFolder, analyzeFabric, fabricRetrofit } from "./lib/fabric";
-import { VersionNames, VersionNamesPanel } from "./components/VersionNames";
-import { ConverterUpload, ConverterPlan, ConverterRun } from "./components/Converter";
-import { rawFiles, proposePlan, r26Layout } from "./lib/convert";
-import { inventory, buildPlan, POLICY_DEFAULT } from "./lib/mapplan";
-import { VisualizeUpload, PlanBar, FlowView, AppsView, ModulesView, ReviewView, ModuleDrawer } from "./components/Visualize";
-import { FormAtlas } from "./components/FormAtlas";
-import { BlueprintUpload, BlueprintHome, BlueprintModule, BlueprintForm, BlueprintFlow, BP_MENU } from "./components/Blueprint";
-import { ProjectLocator } from "./components/Locator";
-import { ObservatoryUpload, ObservatoryWorkspace, OB_MENU } from "./components/Observatory";
-import { readSky, universe as obUniverse } from "./lib/observatory";
-import { loadProject as bpLoad, buildIndex as bpIndex, clsLabel as bpClsLabel } from "./lib/blueprint";
-import { loadNames, saveNames, validate, clean } from "./lib/names";
+import "./app/app.css";
+import { ProjectsProvider, useProjects } from "./app/projects";
+import { useRoute } from "./app/router";
+import { AREAS, TOOLS, toolsOf } from "./app/tools";
+import { useRegistry } from "./app/Shell";
+import ProjectsPage from "./app/ProjectsPage";
+import { Palette } from "./app/Palette";
+import { PerfPanel, usePerfBusy } from "./app/PerfPanel";
+import { VersionNamesPanel } from "./components/VersionNames";
+import { countReads } from "./lib/perf";
 
-// Version names are user-editable per workspace (components/VersionNames.jsx); L = [base, customised, new release]
-// for the Visualizer workspaces and [customised, new release] for Fabric. These keys only pick card colours.
-const PROJ_KEYS = ["r21", "kbz", "r26"];
-const names3 = (L) => L.join(" · ");
+countReads();
 
-// Three workspaces, each with its own upload screen and its own menu.
-const WORKSPACES = {
-  ui: {
-    title: "Visualizer", sub: "Monolith to monolith", ico: "▤", short: "Monolith",
-    desc: (L) => `Compare three Visualizer projects — ${L[0]} (base), ${L[1]} (customised) and ${L[2]} (new release): forms, controllers, MVC extensions and user widgets.`,
-    covers: ["FormForge · forms", "CtrlSync · form controllers", "MVC Bridge · business & presentation", "COMP-are · user widgets"],
-  },
-  ma: {
-    title: "Visualizer", sub: "Monolith to micro app", ico: "❖", short: "Micro app",
-    desc: (L) => `Compare the ${L[0]} and ${L[1]} monoliths (web or mobile) with the ${L[2]} micro-app architecture — every form, controller, presentation / business controller and user widget is located in its new micro app first.`,
-    covers: ["Micro-app map", "FormForge · forms", "CtrlSync · form controllers", "MVC Bridge", "COMP-are · user widgets"],
-  },
-  visualize: {
-    title: "Visualize", sub: "Monolith to micro app", ico: "◎", short: "Visualize",
-    desc: () => "See where every module and form of a monolith goes in the micro-app architecture — animated flow, micro-app board and form-level detail — try the placement options, adjust single modules, then agree the plan. No reference app needed.",
-    covers: ["Animated module → micro-app flow", "Micro-app board", "Modules & forms detail", "Review & agree"],
-  },
-  blueprint: {
-    title: "Blueprint", sub: "A monolith, part by part", ico: "⌗", short: "Blueprint",
-    desc: () => "Upload one monolith (Online Banking or Mobile Banking) and see it laid out as modules → forms, controllers, presentation and business code. Open a form for its screen, every user action, the data in and out, and a code flow breakdown that follows one action to the model and back, with the code at every step.",
-    covers: ["Project blueprint · every module", "Form · screen, actions, data in & out", "Code flow · sequence diagram & call tree", "Code line at every step"],
-  },
-  observatory: {
-    title: "Observatory", sub: "The whole project as a sky", ico: "✦", short: "Observatory",
-    desc: () => "Upload a monolith or a micro-app project and fly through it: every module (or micro app) is a galaxy, every form a solar system with its controller, components and the code it calls in orbit — and every navigation, shared component and cross-module call drawn between them.",
-    covers: ["Sky · galaxies & connections", "Galaxy · its solar systems", "Solar system · controller, components, PC / BC, services", "Star catalogue"],
-  },
-  convert: {
-    title: "Converter", sub: "Monolith to micro app", ico: "⇢", short: "Converter",
-    desc: () => "Rebuild a monolith Visualizer project as micro-app projects — container, feature micro apps, CommonsMA and ResourcesMA — using only the monolith's own code. Written straight into a folder you choose.",
-    covers: ["Editable conversion plan", "Cross-app reference rewrites", "Micro-app project structure", "Full change report"],
-  },
-  fabric: {
-    title: "Fabric", sub: "Fabric app comparison", ico: "≋", short: "Fabric",
-    desc: (L) => `Compare exported Fabric apps — ${L[0]}, ${L[1]} and ${L[2]} (any two, or all three for the retrofit view) — service by service with LoomSync, plus every Java jar decompiled and compared.`,
-    covers: ["Integration", "Object", "Orchestration", "Identity", "Workflow & app manifest", "Java JARs · decompiled"],
-  },
+// each tool's code loads the first time it is opened
+const TOOL_VIEWS = {
+  ma: lazy(() => import("./tools/CompareTool.jsx").then((m) => ({ default: m.CompareMA }))),
+  ui: lazy(() => import("./tools/CompareTool.jsx").then((m) => ({ default: m.CompareMono }))),
+  fabric: lazy(() => import("./tools/FabricTool.jsx")),
+  visualize: lazy(() => import("./tools/VisualizeTool.jsx")),
+  blueprint: lazy(() => import("./tools/BlueprintTool.jsx")),
+  observatory: lazy(() => import("./tools/ObservatoryTool.jsx")),
+  convert: lazy(() => import("./tools/ConvertTool.jsx")),
 };
 
-const uiMenu = (L) => [
-  { id: "home", ico: "◧", label: "Project Overview", desc: `Counts across ${names3(L)}` },
-  {
-    id: "forms", ico: "▤", label: "FormForge", desc: "Forms retrofit",
-    items: [{ id: "forms", label: "Form comparison", ready: true }, { id: "forms-all", label: "Overall comparison", ready: true }],
-  },
-  {
-    id: "controllers", ico: "⚙", label: "CtrlSync", desc: "Form-level controllers",
-    items: [{ id: "controllers", label: "Controller comparison", ready: true }, { id: "controllers-all", label: "Overall comparison", ready: true }],
-  },
-  {
-    id: "mvc", ico: "❏", label: "MVC Bridge", desc: "Business & Presentation controllers",
-    items: [{ id: "mvc", label: "Business & Presentation comparison", ready: true }, { id: "mvc-all", label: "Overall comparison", ready: true }],
-  },
-  {
-    id: "comps", ico: "⧉", label: "COMP-are", desc: "User widgets (components)",
-    items: [{ id: "comps", label: "Component comparison", ready: true }, { id: "comps-all", label: "Overall comparison", ready: true }],
-  },
-];
-
-const maMenu = (L) => [{ id: "home", ico: "❖", label: "Micro-app map", desc: `Where monolith items live in ${L[2]}` }, ...uiMenu(L).slice(1),
-  {
-    id: "segs", ico: "☷", label: "TemplateTwin", desc: "Segment templates",
-    items: [{ id: "segs", label: "Segment comparison", ready: true }, { id: "segs-all", label: "Overall comparison", ready: true }],
-  },
-];
-
-const CV_MENU = [
-  { id: "cv-plan", ico: "▦", label: "Conversion plan", desc: "Monolith module → micro app" },
-  { id: "cv-run", ico: "⇢", label: "Convert & report", desc: "Write the micro-app projects" },
-];
-
-const VZ_MENU = [
-  { id: "vz-flow", ico: "◎", label: "Flow overview", desc: "Modules → micro apps" },
-  { id: "vz-atlas", ico: "✦", label: "Form atlas", desc: "Every form flying to its micro app" },
-  { id: "vz-apps", ico: "▦", label: "Micro apps", desc: "What each one will hold" },
-  { id: "vz-modules", ico: "☰", label: "Modules & forms", desc: "Every form and its destination" },
-  { id: "vz-plan", ico: "✓", label: "Review & agree", desc: "Choices, overrides, sign-off" },
-];
-
-const fabMenu = (L) => [
-  { id: "fab-overview", ico: "≋", label: "LoomSync Overview", desc: `All service types · ${L.join(" · ")}` },
-  { id: "fab-Integration", ico: "⇄", label: "Integration", desc: "Endpoints & operations" },
-  { id: "fab-Object", ico: "◫", label: "Object", desc: "Objects, fields & mappings" },
-  { id: "fab-Orchestration", ico: "⛓", label: "Orchestration", desc: "Composite & looping operations" },
-  { id: "fab-Identity", ico: "🔑", label: "Identity", desc: "Identity providers" },
-  { id: "fab-Workflow", ico: "↯", label: "Workflow", desc: "Workflow services" },
-  { id: "fab-App", ico: "▣", label: "App manifest", desc: "Service lists" },
-  { id: "jars", ico: "☕", label: "Java JARs", desc: "Decompiled jar comparison" },
-];
-
-// Match files across the three versions by key, then extract + compare each (shared by CtrlSync and MVC Bridge).
-async function analyzeSets(maps, extractor, meta, onProgress, labels) {
-  const keys = [...new Set(maps.flatMap((m) => [...m.keys()]))].sort();
-  onProgress({ done: 0, total: keys.length, running: true });
-  const results = [];
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    const base = { path: key, ...meta(key) };
-    const fs = labels.map((l, k) => [l, maps[k].get(key)]);
-    const present = fs.filter(([, f]) => f).map(([l]) => l);
-    if (!fs[0][1] || !fs[1][1]) results.push({ ...base, incomplete: true, present });
-    else {
-      try {
-        const files = [];
-        for (const [label, f] of fs) if (f) { const src = await f.text(); files.push({ label, name: key, src, parsed: extractor(src) }); }
-        results.push({ ...base, model: buildModel(files), present });
-      } catch (e) { results.push({ ...base, error: String(e.message || e), present }); }
-    }
-    if (i % 5 === 0) { onProgress({ done: i + 1, total: keys.length, running: true }); await new Promise((r) => setTimeout(r)); }
-  }
-  onProgress({ done: keys.length, total: keys.length, running: false });
-  return results;
+export default function App() {
+  return <ProjectsProvider><Studio /></ProjectsProvider>;
 }
 
-export default function App() {
-  const [mode, setMode] = useState(null); // null = workspace picker · "ui" monolith · "ma" micro app · "fabric"
-  const [names, setNames] = useState(loadNames); // { ui: [{name, sub}×3], ma: [...], fabric: [{name, sub}×2] }
+function Studio() {
+  const [route, go] = useRoute();
+  const P = useProjects();
+  const { meta } = useRegistry();
+  const busy = usePerfBusy();
+  const tool = TOOLS[route.tool] ? route.tool : "projects";
+  const area = tool === "projects" ? "projects" : TOOLS[tool].area;
+  const [last, setLast] = useState({}); // tool -> its last page address (switching back returns there)
+  const [lastInArea, setLastInArea] = useState({});
+  const [visited, setVisited] = useState(() => new Set()); // opened tools stay mounted so their analyses survive switching
+  const [side, setSide] = useState(true);
+  const [openGroups, setOpenGroups] = useState(new Set());
+  const [palette, setPalette] = useState(false);
+  const [perf, setPerf] = useState(false);
   const [namesOpen, setNamesOpen] = useState(false);
-  const labelsOf = (ws) => clean(names[ws]).map((x) => x.name);
-  const L = { ui: labelsOf("ui"), ma: labelsOf("ma"), fabric: labelsOf("fabric") };
-  const setNamesFor = (ws, list) => setNames((n) => { const c = { ...n, [ws]: list }; saveNames(c); return c; });
-  const [side, setSide] = useState(true); // sidebar expanded
-  const [openGroups, setOpenGroups] = useState(new Set(["forms", "controllers"]));
-
-  // Visualizer · monolith to monolith
-  const [picked, setPicked] = useState([null, null, null]);
-  const [uiEntered, setUiEntered] = useState(false);
-  const [uiNav, setUiNav] = useState("home");
-  // Visualizer · monolith to micro app
-  const [maChannel, setMaChannel] = useState("web");
-  const [maPick, setMaPick] = useState([null, null, null]); // R21 monolith, KBZ monolith, R26 micro-app folder
-  const [maAligned, setMaAligned] = useState(null); // { picked: [R21, KBZ, aligned R26], report, missing, channel }
-  const [maAligning, setMaAligning] = useState(null);
-  const [maNav, setMaNav] = useState("home");
-  // Converter: monolith -> micro apps
-  const [cvChannel, setCvChannel] = useState("web");
-  const [cvPick, setCvPick] = useState([null, null]); // [{scan, raw} monolith, micro-app reference]
-  const [cvPlan, setCvPlan] = useState(null);
-  const [cvPlanning, setCvPlanning] = useState(null);
-  const [cvNav, setCvNav] = useState("cv-plan");
-  const [cvRun, setCvRun] = useState(null);
-  // Visualize: monolith -> micro apps from the built-in R26 map
-  const [vzChannel, setVzChannel] = useState("web");
-  const [vzPick, setVzPick] = useState(null); // { name, files }
-  const [vzEntered, setVzEntered] = useState(false);
-  const [vzNav, setVzNav] = useState("vz-flow");
-  const [vzPolicy, setVzPolicy] = useState(POLICY_DEFAULT);
-  const [vzOverrides, setVzOverrides] = useState({});
-  const [vzOpen, setVzOpen] = useState(null); // module shown in the drawer
-  const [vzSel, setVzSel] = useState(null); // module selected in Modules & forms
-  const [vzAgreed, setVzAgreed] = useState(null);
-  const vzInv = useMemo(() => (vzPick ? inventory(vzPick.files, vzChannel) : null), [vzPick, vzChannel]);
-  const vzPlan = useMemo(() => (vzInv && vzEntered ? buildPlan(vzInv, vzChannel, vzPolicy, vzOverrides) : null), [vzInv, vzEntered, vzChannel, vzPolicy, vzOverrides]);
-  const vzKey = vzPick ? `retrofit-studio:vz-agreed:${vzPick.name}:${vzChannel}` : null;
-  // Fabric
-  const [fab, setFab] = useState([null, null, null]); // Fabric exports: base, customised, new release (any two)
-  const [fabEntered, setFabEntered] = useState(false);
-  const [fabNav, setFabNav] = useState("fab-overview");
-  const [fabBulk, setFabBulk] = useState({}); // "ab" (slot positions) -> analysis of that pair
-  const [fabAnalyzing, setFabAnalyzing] = useState({}); // "ab" -> progress
-  const [fabPair, setFabPair] = useState(null); // [a, b] currently shown
-  const [fabSel, setFabSel] = useState(null); // { type, svc, unit }
-  const [jarFocus, setJarFocus] = useState(null); // Java JARs: { base, item } of the opened jar
-  // Blueprint: one monolith read part by part
-  const [bpPick, setBpPick] = useState(null);
-  const [bpCh, setBpCh] = useState(null);
-  const [bpIdx, setBpIdx] = useState(null);
-  const [bpBusy, setBpBusy] = useState(false);
-  // Observatory: one monolith or micro-app project as a sky
-  const [obPick, setObPick] = useState(null);
-  const [obCh, setObCh] = useState(null);
-  const [obU, setObU] = useState(null);
-  const [obBusy, setObBusy] = useState(false);
-  const [obNav, setObNav] = useState("ob-sky");
-  const [bpNav, setBpNav] = useState("bp-home");
-  const [bpModule, setBpModule] = useState(null);
-  const [bpForm, setBpForm] = useState(null);
-  const [bpTab, setBpTab] = useState("preview");
-  const [bpEntry, setBpEntry] = useState(null);
-  const [bpExternal, setBpExternal] = useState(null);
-  const bpCache = useMemo(() => new Map(), [bpIdx]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const entered = { ui: uiEntered, ma: !!maAligned, visualize: vzEntered && !!vzPlan, blueprint: !!bpIdx, observatory: !!obU, convert: !!cvPlan, fabric: fabEntered };
-  const uiReady = picked[0] && picked[1] && !validate(names.ui);
-  const fabReady = fab.filter(Boolean).length >= 2 && !validate(names.fabric);
-  // pairs that can be compared; the customised · new release pair first (what a 2-export comparison shows)
-  const fabPairs = [[1, 2], [0, 1], [0, 2]].filter(([a, b]) => fab[a] && fab[b]);
-  const curPair = fabPair && fabPairs.some(([a, b]) => a === fabPair[0] && b === fabPair[1]) ? fabPair : fabPairs[0] || null;
-  const pk = (p) => `${p[0]}${p[1]}`;
-  const fabAll = fab.every(Boolean);
-  const fabRetro = useMemo(() => (fabAll && fabBulk["01"] && fabBulk["02"] && fabBulk["12"] ? fabricRetrofit(fabBulk["01"], fabBulk["02"], fabBulk["12"]) : null), [fabAll, fabBulk]);
-  const maReady = maPick[0] && maPick[1] && maPick[2] && !validate(names.ma);
-  const maSegReport = useMemo(() => (maAligned && maAligned.report.segs ? new Map(maAligned.report.segs.map((r) => [r.key, r])) : null), [maAligned]);
-
-  const onFolder = (i, fileList) => {
-    const scan = scanFolder(fileList);
-    setPicked((p) => { const c = [...p]; c[i] = scan; return c; });
-  };
-  const onMaFolder = (i, fileList) => {
-    const scan = i === 2 ? scanMicroApps(fileList, scanFolder) : scanFolder(fileList);
-    setMaPick((p) => { const c = [...p]; c[i] = scan; return c; });
-  };
-  const onCvFolder = (i, fileList) => {
-    const v = i === 0 ? { scan: scanFolder(fileList), raw: rawFiles(fileList) } : scanMicroApps(fileList, scanFolder);
-    setCvPick((p) => { const c = [...p]; c[i] = v; return c; });
-  };
-  const buildCvPlan = async () => {
-    setCvPlanning({ running: true, step: "Matching modules to micro apps" });
-    try {
-      const plan = await proposePlan(cvPick[0].scan, cvPick[0].raw.files, cvPick[1], cvChannel);
-      setCvPlanning({ running: true, step: "Placing every form where R26 keeps it" });
-      plan.layout = await r26Layout(cvPick[0].raw.files, cvPick[1], cvChannel);
-      plan.useLayout = true;
-      setCvPlan(plan); setCvNav("cv-plan"); setCvRun(null);
-      setCvPlanning(null);
-    } catch (e) { setCvPlanning({ running: false, step: `Could not build the plan: ${e.message || e}` }); }
-  };
-  const onVzFolder = (fileList) => {
-    const raw = rawFiles(fileList);
-    const first = fileList[0] ? (fileList[0].webkitRelativePath || "").split("/")[0] : "";
-    setVzPick({ name: first || "project", files: raw.files });
-    setVzOverrides({}); setVzOpen(null); setVzSel(null);
-  };
-  const vzSetOverride = (module, app) => setVzOverrides((o) => { const n = { ...o }; if (app) n[module] = app; else delete n[module]; return n; });
-  useEffect(() => { // previously agreed plan for this project + channel
-    if (!vzKey) { setVzAgreed(null); return; }
-    let rec = null;
-    try { rec = JSON.parse(localStorage.getItem(vzKey) || "null"); } catch { /* storage unavailable */ }
-    setVzAgreed(rec);
-    if (rec) { setVzPolicy({ ...POLICY_DEFAULT, ...rec.policy }); setVzOverrides(rec.overrides || {}); } // reopen on the agreed plan
-  }, [vzKey]);
-  const vzAgree = () => {
-    const rec = { date: new Date().toLocaleString(), policy: vzPolicy, overrides: vzOverrides, stats: vzPlan.stats };
-    try { localStorage.setItem(vzKey, JSON.stringify(rec)); } catch { /* storage unavailable: kept for this session */ }
-    setVzAgreed(rec);
-  };
-  const onBpFolder = (fileList) => {
-    const p = bpLoad(fileList);
-    setBpPick(p);
-    const chans = Object.keys(p.channels);
-    setBpCh(chans.includes("desktop") ? "desktop" : chans.includes("mobile") ? "mobile" : chans[0] || null);
-  };
-  const onObFolder = (fileList) => {
-    const p = readSky(fileList);
-    setObPick(p);
-    const chans = Object.keys(p.channels);
-    setObCh(chans.includes("desktop") ? "desktop" : chans.includes("mobile") ? "mobile" : chans[0] || null);
-  };
-  const openOb = async () => {
-    setObBusy(true);
-    const U = await obUniverse(obPick, obCh);
-    setObU(U); setObNav("ob-sky"); setObBusy(false);
-  };
-  const openBp = async () => {
-    setBpBusy(true);
-    const idx = await bpIndex(bpPick, bpCh);
-    setBpIdx(idx); setBpNav("bp-home"); setBpModule(null); setBpForm(null); setBpEntry(null); setBpExternal(null); setBpBusy(false);
-  };
-  const bpOpenForm = (k) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpTab("preview"); setBpEntry(null); setBpExternal(null); setBpNav("bp-form"); };
-  const bpOpenFlow = (id) => { setBpEntry(id); setBpExternal(null); setBpNav("bp-flow"); };
-  const bpOpenFormTab = (k, tab) => { bpOpenForm(k); setBpTab(tab); };
-  const bpOpenFormFlow = (k, id) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpExternal(null); setBpEntry(id); setBpNav("bp-flow"); };
-  const bpTraceFrom = ({ cls, member, label }) => { setBpExternal({ id: `ext:${cls.id}#${member.name}`, group: "arrival", source: "started from a function", label: label || `${bpClsLabel(cls)}.${member.name}`, cls, member }); setBpEntry(null); setBpNav("bp-flow"); };
-  const onFabFolder = (i, fileList) => {
-    const scan = scanFabricFolder(fileList);
-    setFab((p) => { const c = [...p]; c[i] = scan; return c; });
-    setFabBulk({}); setFabAnalyzing({}); setFabSel(null); setJarFocus(null); resetDecompile();
-  };
-  const startMa = async () => {
-    const C = CHANNELS[maChannel];
-    const mono = [channelScan(maPick[0], C.mono), channelScan(maPick[1], C.mono)];
-    const missing = await missingMicroApps(maPick[2]);
-    const { r26, report } = await alignMicroApps(mono, maPick[2], maChannel, setMaAligning);
-    setMaAligned({ picked: [mono[0], mono[1], r26], report, missing, channel: maChannel });
-    setMaNav("home");
-  };
 
   useEffect(() => {
-    if (mode !== "fabric" || !fabEntered || !curPair) return;
-    if (Object.values(fabAnalyzing).some((x) => x && x.running)) return; // one pair at a time
-    const want = [curPair, ...(fabAll && fabNav === "fab-overview" ? [[0, 1], [0, 2], [1, 2]] : [])];
-    const next = want.find((p) => !fabBulk[pk(p)]);
-    if (!next) return;
-    const key = pk(next);
-    const progress = (x) => setFabAnalyzing((m) => ({ ...m, [key]: x }));
-    progress({ done: 0, total: 0, running: true });
-    analyzeFabric([fab[next[0]], fab[next[1]]], [L.fabric[next[0]], L.fabric[next[1]]], progress)
-      .then((res) => setFabBulk((m) => ({ ...m, [key]: res })));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, fabEntered, fab, fabBulk, fabAnalyzing, curPair && pk(curPair), fabNav]);
+    if (tool === "projects") return;
+    setLast((l) => ({ ...l, [tool]: route }));
+    setLastInArea((l) => ({ ...l, [area]: tool }));
+    setVisited((v) => (v.has(tool) ? v : new Set(v).add(tool)));
+  }, [tool, route, area]);
+  useEffect(() => setNamesOpen(false), [tool]);
+  useEffect(() => {
+    const on = (e) => { if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") { e.preventDefault(); setPalette((v) => !v); } };
+    window.addEventListener("keydown", on);
+    return () => window.removeEventListener("keydown", on);
+  }, []);
 
-  // "New project" clears only the current workspace and returns to its upload screen
-  const reset = {
-    ui: () => { setUiEntered(false); setPicked([null, null, null]); setUiNav("home"); },
-    ma: () => { setMaAligned(null); setMaPick([null, null, null]); setMaAligning(null); setMaNav("home"); },
-    blueprint: () => { setBpIdx(null); setBpPick(null); setBpCh(null); setBpNav("bp-home"); setBpModule(null); setBpForm(null); setBpEntry(null); setBpExternal(null); },
-    observatory: () => { setObU(null); setObPick(null); setObCh(null); setObNav("ob-sky"); },
-    visualize: () => { setVzEntered(false); setVzPick(null); setVzPolicy(POLICY_DEFAULT); setVzOverrides({}); setVzOpen(null); setVzSel(null); setVzNav("vz-flow"); },
-    convert: () => { setCvPlan(null); setCvPick([null, null]); setCvPlanning(null); setCvRun(null); setCvNav("cv-plan"); },
-    fabric: () => { setFabEntered(false); setFab([null, null, null]); setFabBulk({}); setFabAnalyzing({}); setFabPair(null); setFabSel(null); setJarFocus(null); resetDecompile(); setFabNav("fab-overview"); },
-  };
-  const status = {
-    ui: uiEntered ? `Loaded · ${L.ui.filter((m, i) => picked[i]).join(" · ")}` : picked.some(Boolean) ? `${picked.filter(Boolean).length}/3 projects picked` : "Not loaded yet",
-    visualize: vzEntered && vzPlan ? `${vzPick.name} · ${vzPlan.stats.forms} forms → ${vzPlan.stats.apps} micro apps${vzAgreed ? " · agreed" : ""}` : vzPick ? `${vzPick.name} picked` : "Not loaded yet",
-    blueprint: bpIdx ? `${bpIdx.project.name} · ${bpIdx.modules.size} modules · ${bpIdx.forms.size} forms` : bpPick ? `${bpPick.name} picked` : "Not loaded yet",
-    observatory: obU ? `${obU.name} · ${obU.galaxies.filter((g) => g.systems.length).length} galaxies · ${obU.systems.length} forms` : obPick ? `${obPick.name} picked` : "Not loaded yet",
-    convert: cvPlan ? `Plan ready · ${cvPlan.rows.length} modules` : cvPick.some(Boolean) ? `${cvPick.filter(Boolean).length}/2 folders picked` : "Not loaded yet",
-    ma: maAligned ? `Loaded · ${CHANNELS[maAligned.channel].label}` : maPick.some(Boolean) ? `${maPick.filter(Boolean).length}/3 folders picked` : "Not loaded yet",
-    fabric: fabEntered ? `Loaded · ${L.fabric.filter((x, i) => fab[i]).join(" · ")}` : fab.some(Boolean) ? `${fab.filter(Boolean).length}/3 exports picked` : "Not loaded yet",
-  };
-  const shellProps = (m, nav, setNav, menu, foot) => ({ hidden: mode !== m, side, nav, setNav, openGroups, setOpenGroups, menu, workspace: WORKSPACES[m], foot });
+  const openTool = (t) => go(last[t] || { tool: t });
+  const openArea = (a) => (a === "projects" ? go({ tool: "projects" }) : openTool(lastInArea[a] || toolsOf(a)[0]));
+  const m = meta[tool];
+  const entered = !!(m && m.entered);
+  const T = TOOLS[tool];
+  const mounted = new Set(visited);
+  if (tool !== "projects") mounted.add(tool);
 
   return (
     <div>
       <div className="brand">
-        {mode && entered[mode] && <button className="burger" title="Menu" onClick={() => setSide((v) => !v)}><span /></button>}
-        <div className="logo" style={{ cursor: "pointer" }} onClick={() => setMode(null)} title="Workspaces">
+        {entered && <button className="burger" title="Menu" onClick={() => setSide((v) => !v)}><span /></button>}
+        <div className="logo" style={{ cursor: "pointer" }} onClick={() => go({ tool: "projects" })} title="Projects">
           <span className="mark">Retr<span className="o">o</span>fit Studio</span>
           <span className="by">Powered by <span className="ava">avenza</span></span>
         </div>
-        {mode && (
-          <div className="wsswitch">
-            {Object.entries(WORKSPACES).map(([k, w]) => (
-              <button key={k} className={k === mode ? "on" : ""} onClick={() => setMode(k)} title={`${w.title} · ${w.sub}`}>{w.ico} {w.short}</button>
-            ))}
-          </div>
-        )}
+        <nav className="areas">
+          {AREAS.map((a) => <button key={a.id} className={a.id === area ? "on" : ""} onClick={() => openArea(a.id)}>{a.ico} {a.label}</button>)}
+        </nav>
         <div className="rt">
-          {mode && entered[mode] && !["convert", "visualize", "blueprint", "observatory"].includes(mode) && <button className="pillbtn" onClick={() => setNamesOpen((v) => !v)}>✎ Version names</button>}
-          {mode && <button className="pillbtn" onClick={() => setMode(null)}>⌂ Workspaces</button>}
-          {mode && entered[mode] && <button className="pillbtn" onClick={reset[mode]}>New project</button>}
+          <button className="pillbtn searchbtn" onClick={() => setPalette(true)} title="Search (Ctrl+K)">⌕ Search <kbd>Ctrl K</kbd></button>
+          <button className={"pillbtn" + (perf ? " on" : "")} onClick={() => setPerf((v) => !v)} title="Timings">⏱{busy ? <span className="busy">{busy}</span> : null}</button>
+          {entered && T.names && <button className="pillbtn" onClick={() => setNamesOpen((v) => !v)}>✎ Version names</button>}
+          {entered && m.reset && <button className="pillbtn" onClick={() => { m.reset(); go({ tool }); }} title="Back to this tool's start page; loaded folders stay loaded">↺ Start over</button>}
         </div>
       </div>
-
-      {namesOpen && mode && entered[mode] && !["convert", "visualize", "blueprint", "observatory"].includes(mode) && (
-        <VersionNamesPanel key={mode} ws={mode} value={names[mode]} onClose={() => setNamesOpen(false)}
-          onApply={(list) => { setNamesFor(mode, list); if (mode === "fabric") { setFabBulk({}); setFabAnalyzing({}); } }} />
-      )}
-      {!mode && (
-        <div style={{ maxWidth: 1180, margin: "0 auto", padding: "28px 18px" }}>
-          <Landing status={status} done={entered} open={setMode} labels={L} />
-        </div>
-      )}
-      {mode && !entered[mode] && (
-        <div style={{ maxWidth: 1000, margin: "0 auto", padding: "24px 18px" }}>
-          <button className="btn ghost" onClick={() => setMode(null)} style={{ marginBottom: 12 }}>← Workspaces</button>
-          {mode === "ui" && (
-            <ProjectPick picked={picked} onFolder={onFolder} canEnter={uiReady} enter={() => { setUiEntered(true); setUiNav("home"); }}
-              names={names.ui} setNames={(x) => setNamesFor("ui", x)} />
-          )}
-          {mode === "ma" && (
-            <MicroAppUpload channel={maChannel} setChannel={setMaChannel} pick={maPick} onFolder={onMaFolder}
-              canEnter={maReady} enter={startMa} aligning={maAligning} labels={L.ma}
-              editor={<VersionNames ws="ma" value={names.ma} onChange={(x) => setNamesFor("ma", x)} />} />
-          )}
-          {mode === "visualize" && (
-            <VisualizeUpload channel={vzChannel} setChannel={setVzChannel} pick={vzPick && { ...vzPick, inv: vzInv }} onFolder={onVzFolder}
-              go={() => { setVzEntered(true); setVzNav("vz-flow"); }} />
-          )}
-          {mode === "observatory" && <ObservatoryUpload pick={obPick} onFolder={onObFolder} ch={obCh} setCh={setObCh} go={openOb} busy={obBusy} />}
-          {mode === "blueprint" && <BlueprintUpload pick={bpPick} onFolder={onBpFolder} ch={bpCh} setCh={setBpCh} go={openBp} busy={bpBusy} />}
-          {mode === "convert" && (
-            <ConverterUpload channel={cvChannel} setChannel={setCvChannel} pick={cvPick} onFolder={onCvFolder}
-              canPlan={!!(cvPick[0] && cvPick[1])} onPlan={buildCvPlan} planning={cvPlanning} />
-          )}
-          {mode === "fabric" && (
-            <FabricUpload fab={fab} onFabFolder={onFabFolder} canEnter={fabReady} enter={() => { setFabEntered(true); setFabNav("fab-overview"); }}
-              names={names.fabric} setNames={(x) => setNamesFor("fabric", x)} />
-          )}
-        </div>
-      )}
-
-      {/* loaded workspaces stay mounted (hidden when not current) so their analyses survive switching */}
-      {uiEntered && (
-        <Shell {...shellProps("ui", uiNav, setUiNav, uiMenu(L.ui), `${picked.filter(Boolean).length}/3 projects loaded · ${names3(L.ui)}`)}>
-          <VisualizerWorkspace key={L.ui.join("|")} picked={picked} labels={L.ui} nav={uiNav} setNav={setUiNav} active={mode === "ui"}
-            home={<Home picked={picked} goto={setUiNav} names={clean(names.ui)} />} />
-        </Shell>
-      )}
-      {maAligned && (
-        <Shell {...shellProps("ma", maNav, setMaNav, maMenu(L.ma), `${CHANNELS[maAligned.channel].label} · ${maAligned.picked[2].microApps} ${L.ma[2]} projects`)}>
-          <VisualizerWorkspace key={L.ma.join("|")} picked={maAligned.picked} labels={L.ma} nav={maNav} setNav={setMaNav} active={mode === "ma"}
-            segReport={maSegReport}
-            home={<MicroAppMap aligned={maAligned} goto={setMaNav} labels={L.ma} />} />
-        </Shell>
-      )}
-      {vzEntered && vzPlan && (
-        <Shell {...shellProps("visualize", vzNav, setVzNav, VZ_MENU, `${vzPick.name} · ${CHANNELS[vzChannel].label} · R26 ${vzPlan.release} map`)}>
-          {(() => {
-            const header = (
-              <>
-                <h2 className="page">{VZ_MENU.find((x) => x.id === vzNav).label}</h2>
-                <div className="crumb">{vzPick.name} → micro-app architecture · {CHANNELS[vzChannel].label}</div>
-                <PlanBar policy={vzPolicy} setPolicy={setVzPolicy} overrides={vzOverrides} agreed={vzAgreed} />
-              </>
-            );
-            const open = (m) => setVzOpen(m);
+      {area !== "projects" && (
+        <div className="toolstrip">
+          {toolsOf(area).map((t) => {
+            const X = TOOLS[t], need = X.needs(P.slots, P.L[X.names === "fabric" ? "fabric" : "viz"]), on = meta[t] && meta[t].entered;
             return (
-              <>
-                {vzNav === "vz-flow" && <FlowView plan={vzPlan} open={open} header={header} />}
-                {vzNav === "vz-atlas" && <FormAtlas plan={vzPlan} open={open} header={header} />}
-                {vzNav === "vz-apps" && <AppsView plan={vzPlan} open={open} header={header} />}
-                {vzNav === "vz-modules" && <ModulesView plan={vzPlan} sel={vzSel} setSel={setVzSel} setOverride={vzSetOverride} header={header} />}
-                {vzNav === "vz-plan" && <ReviewView plan={vzPlan} inv={vzInv} setPolicy={setVzPolicy} overrides={vzOverrides} setOverride={vzSetOverride} agreed={vzAgreed} agree={vzAgree} projectName={vzPick.name} header={header} />}
-                {vzOpen && <ModuleDrawer module={vzOpen} plan={vzPlan} setOverride={vzSetOverride} onClose={() => setVzOpen(null)} />}
-              </>
+              <button key={t} className={(t === tool ? "on" : "") + (on ? " live" : "")} onClick={() => openTool(t)} title={on ? meta[t].status : need ? `Needs ${need}` : "Ready"}>
+                {X.ico} {X.title}{on && <i className="dot" />}
+              </button>
             );
-          })()}
-        </Shell>
-      )}
-      {bpIdx && (
-        <Shell {...shellProps("blueprint", bpNav, setBpNav, BP_MENU, `${bpIdx.project.name} · ${bpIdx.ch}${bpModule ? " · " + bpModule : ""}${bpForm ? " · " + bpForm.split("/").pop() : ""}`)}>
-          {bpNav === "bp-home" && <BlueprintHome idx={bpIdx} open={(m) => { setBpModule(m); setBpNav("bp-module"); }} />}
-          {bpNav === "bp-module" && <BlueprintModule idx={bpIdx} module={bpModule} setModule={setBpModule} openForm={bpOpenForm} traceFrom={bpTraceFrom} />}
-          {bpNav === "bp-form" && <BlueprintForm idx={bpIdx} formKey={bpForm} setForm={bpOpenForm} tab={bpTab} setTab={setBpTab} openFlow={bpOpenFlow} cache={bpCache} />}
-          {bpNav === "bp-locate" && <ProjectLocator idx={bpIdx} cache={bpCache} openFormTab={(k) => bpOpenFormTab(k, "where")} openFormFlow={bpOpenFormFlow} />}
-          {bpNav === "bp-flow" && <BlueprintFlow idx={bpIdx} formKey={bpExternal ? null : bpForm} setForm={(k) => { setBpForm(k); setBpModule(k.split("/").slice(0, -1).join("/")); setBpEntry(null); }} entryId={bpEntry} setEntry={setBpEntry} cache={bpCache} external={bpExternal} />}
-        </Shell>
-      )}
-      {obU && (
-        <Shell {...shellProps("observatory", obNav, setObNav, OB_MENU, `${obU.name} · ${obU.ch}`)}>
-          <ObservatoryWorkspace U={obU} nav={obNav} setNav={setObNav} />
-        </Shell>
-      )}
-      {cvPlan && (
-        <Shell {...shellProps("convert", cvNav, setCvNav, CV_MENU, `${CHANNELS[cvPlan.channel].label} · ${cvPlan.rows.length} modules`)}>
-          {cvNav === "cv-plan" && <ConverterPlan plan={cvPlan} setPlan={setCvPlan} goRun={() => setCvNav("cv-run")} />}
-          {cvNav === "cv-run" && <ConverterRun plan={cvPlan} mono={cvPick[0]} ma={cvPick[1]} run={cvRun} setRun={setCvRun} />}
-        </Shell>
-      )}
-      {fabEntered && (
-        <Shell {...shellProps("fabric", fabNav, setFabNav, fabMenu(L.fabric), `${L.fabric.filter((x, i) => fab[i]).join(" · ")} Fabric exports loaded`)}>
-          {fabNav.startsWith("fab-") && (
-            <LoomSync type={fabNav === "fab-overview" ? null : fabNav.slice(4)} fab={fab} onFabFolder={onFabFolder} names={L.fabric}
-              pairs={fabPairs} pair={curPair} setPair={(p) => { setFabPair(p); setFabSel(null); }}
-              bulk={curPair ? fabBulk[pk(curPair)] : null} analyzing={curPair ? fabAnalyzing[pk(curPair)] : null}
-              retro={fabRetro} retroProgress={fabAll ? ["01", "02", "12"].map((k) => (fabBulk[k] ? "done" : fabAnalyzing[k] && fabAnalyzing[k].running ? fabAnalyzing[k] : "waiting")) : null}
-              sel={fabSel}
-              setSel={(x) => { setFabSel(x); if (x && x.type) setFabNav("fab-" + x.type); }}
-              goType={(t) => { setFabSel(null); setFabNav("fab-" + t); }} />
-          )}
-          {fabNav === "jars" && (
-            <JarView fab={fab} names={L.fabric} pairs={fabPairs} pair={curPair} setPair={(p) => { setFabPair(p); setJarFocus(null); }}
-              focus={jarFocus} setFocus={setJarFocus} />
-          )}
-        </Shell>
-      )}
-    </div>
-  );
-}
-
-function Shell({ hidden, side, nav, setNav, openGroups, setOpenGroups, menu, workspace, foot, children }) {
-  return (
-    <div className={"shell" + (side ? "" : " side-collapsed")} style={hidden ? { display: "none" } : undefined}>
-      <Sidebar side={side} nav={nav} setNav={setNav} openGroups={openGroups} setOpenGroups={setOpenGroups} menu={menu} workspace={workspace} foot={foot} />
-      <div className="content">{children}</div>
-    </div>
-  );
-}
-
-// One Visualizer comparison (R21 · KBZ · R26) with its own analysis state. Used twice: monolith-to-monolith and
-// monolith-to-micro-app (where picked[2] is R26 re-keyed onto the monolith's names by the micro-app map).
-function VisualizerWorkspace({ picked, labels, nav, setNav, active, home, segReport }) {
-  const [bulk, setBulk] = useState(null);
-  const [analyzing, setAnalyzing] = useState(null);
-  const [formScan, setFormScan] = useState({}); // per version-pair form property scan (kept across menu navigation)
-  const [drill, setDrill] = useState(null);
-  const [mvcBulk, setMvcBulk] = useState(null);
-  const [mvcAnalyzing, setMvcAnalyzing] = useState(null);
-  const [mvcDrill, setMvcDrill] = useState(null);
-  const [overall, setOverall] = useState({}); // full-file comparison scans, per category + version pair
-  const [compBulk, setCompBulk] = useState(null);
-  const [compAnalyzing, setCompAnalyzing] = useState(null);
-  const [compDrill, setCompDrill] = useState(null);
-  const [compAspect, setCompAspect] = useState("structure");
-  const [segBulk, setSegBulk] = useState(null);
-  const [segAnalyzing, setSegAnalyzing] = useState(null);
-  const [segDrill, setSegDrill] = useState(null);
-  const [segAspect, setSegAspect] = useState("structure");
-  const [segPicked, setSegPicked] = useState(null); // per version: { segs: template -> its files } for the Overall comparison
-  const [segUsage, setSegUsage] = useState(null);
-  const [segUsageProg, setSegUsageProg] = useState(null);
-  const [tab, setTab] = useState("overview");
-  const [member, setMember] = useState(null);
-  const [view, setView] = useState("OLD_CUST");
-
-  const runControllers = async () => {
-    // extractComponent reads both controller styles: define({...}) and define([deps], function(){ return {...} })
-    const results = await analyzeSets(picked.map((p) => (p ? p.controllers : new Map())), extractComponent,
-      (k) => ({ base: k.split("/").pop().replace(/\.js$/, "") }), setAnalyzing, labels);
-    setBulk({ results, unmatched: [] });
-  };
-  const runMvc = async () => {
-    const results = await analyzeSets(picked.map((p) => (p ? p.mvc : new Map())), extractModule,
-      (k) => ({ base: k.split("/")[0], kind: mvcKind(k) }), setMvcAnalyzing, labels);
-    setMvcBulk({ results, unmatched: [] });
-  };
-  // segment templates: the comparison first, then (in the background) the files for side by side and where each is used
-  const segFilesOnce = useRef(null);
-  const loadSegFiles = () => { if (!segFilesOnce.current) segFilesOnce.current = segmentFiles(picked).then((x) => { setSegPicked(x); return x; }); return segFilesOnce.current; };
-  const runSegs = async () => {
-    const results = await analyzeSegments(picked, labels.filter((l, i) => i < 2 || picked[2]), setSegAnalyzing);
-    setSegBulk({ results });
-    loadSegFiles();
-    setSegUsageProg({ done: 0, total: 1, running: true });
-    setSegUsage(await segmentUsage(picked, setSegUsageProg));
-  };
-  const runComps = async () => {
-    const results = await analyzeComponents(picked.map((p) => (p ? p.comps : null)), labels, setCompAnalyzing);
-    setCompBulk({ results });
-  };
-
-  // run an analysis the first time its view is opened
-  useEffect(() => {
-    if (!active) return;
-    if (nav === "controllers" && !bulk && !(analyzing && analyzing.running)) runControllers();
-    if (nav === "mvc" && !mvcBulk && !(mvcAnalyzing && mvcAnalyzing.running)) runMvc();
-    if (nav === "comps" && !compBulk && !(compAnalyzing && compAnalyzing.running)) runComps();
-    if (nav === "segs" && !segBulk && !(segAnalyzing && segAnalyzing.running)) runSegs();
-    if (nav === "segs-all") loadSegFiles();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nav, active]);
-
-  const openDrill = (i) => { setDrill(i); setTab("overview"); setView("OLD_CUST"); setMember(bulk.results[i].model.genuine[0] || null); };
-  const openMvcDrill = (i) => { setMvcDrill(i); setTab("overview"); setView("OLD_CUST"); setMember(mvcBulk.results[i].model.genuine[0] || null); };
-  const reportProps = { tab, setTab, member, setMember, view, setView };
-  const openCompDrill = (i) => { setCompDrill(i); setCompAspect("structure"); setTab("overview"); setView("OLD_CUST"); setMember(null); };
-  const changeCompAspect = (k) => { setCompAspect(k); setMember(null); };
-  void setNav;
-
-  return (
-    <>
-      {nav === "home" && home}
-      {nav === "forms" && <FormsView picked={picked} labels={labels} scan={formScan} setScan={setFormScan} />}
-      {nav === "forms-all" && <OverallView key="forms" cat="forms" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
-      {nav === "controllers-all" && <OverallView key="controllers" cat="controllers" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
-      {nav === "mvc-all" && <OverallView key="mvc" cat="mvc" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
-      {nav === "comps-all" && <OverallView key="comps" cat="comps" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
-      {nav === "segs-all" && (segPicked ? <OverallView key="segs" cat="segs" picked={segPicked} labels={labels} cache={overall} setCache={setOverall} />
-        : <div><h2 className="page">Segment templates · Overall comparison</h2><p className="note">Collecting every template's files and its controller…</p></div>)}
-      {nav === "segs" && (
-        <SegmentsView picked={picked} labels={labels.filter((l, i) => i < 2 || picked[2])} bulk={segBulk} analyzing={segAnalyzing}
-          drill={segDrill} setDrill={(i) => { setSegDrill(i); if (i != null) { setSegAspect("structure"); setTab("overview"); setView("OLD_CUST"); setMember(null); } }}
-          aspect={segAspect} setAspect={(k) => { setSegAspect(k); setMember(null); }} overall={overall} setOverall={setOverall}
-          report={segReport} usage={segUsage} usageProg={segUsageProg} segPicked={segPicked}
-          renderReport={(model) => <Report model={model} {...reportProps} widgets={false} />} />
-      )}
-      {nav === "comps" && (
-        <ComponentsView picked={picked} labels={labels.filter((l, i) => i < 2 || picked[2])} bulk={compBulk} analyzing={compAnalyzing}
-          drill={compDrill} setDrill={(i) => (i == null ? setCompDrill(null) : openCompDrill(i))}
-          aspect={compAspect} setAspect={changeCompAspect} overall={overall} setOverall={setOverall}
-          renderReport={(model) => <Report model={model} {...reportProps} widgets={false} />} />
-      )}
-      {nav === "controllers" && (
-        <AnalysisView title="Controller Retrofit" crumb={`Form-level controllers · ${labels[1]} customisations carried onto ${labels[2]}`} noun="controllers" labels={labels}
-          bulk={bulk} analyzing={analyzing} drill={drill} setDrill={setDrill} openDrill={openDrill} reportProps={reportProps} />
-      )}
-      {nav === "mvc" && (
-        <AnalysisView title="Business & Presentation Retrofit" crumb={`MVC extensions · business and presentation controller logic across ${names3(labels)}`} noun="modules" labels={labels}
-          bulk={mvcBulk} analyzing={mvcAnalyzing} drill={mvcDrill} setDrill={setMvcDrill} openDrill={openMvcDrill} reportProps={reportProps} showKind />
-      )}
-    </>
-  );
-}
-
-function AnalysisView({ title, crumb, noun, bulk, analyzing, drill, setDrill, openDrill, reportProps, showKind, labels }) {
-  if (drill != null && bulk) {
-    const r = bulk.results[drill];
-    return (
-      <div>
-        <button className="btn ghost" onClick={() => setDrill(null)} style={{ marginBottom: 10 }}>← All {noun}</button>
-        <h2 className="page">{r.base}{r.kind && <span className={"kindpill k-" + r.kind}>{r.kind}</span>}</h2>
-        <div className="crumb">{r.path}</div>
-        <Report model={r.model} {...reportProps} widgets={!showKind} />
-      </div>
-    );
-  }
-  return (
-    <div>
-      <h2 className="page">{title}</h2>
-      <div className="crumb">{crumb}</div>
-      {analyzing && analyzing.running ? (
-        <div style={{ maxWidth: 520 }}>
-          <p className="note">Formatting &amp; comparing {noun}… {analyzing.done}/{analyzing.total}</p>
-          <div className="progress"><div style={{ width: (analyzing.total ? analyzing.done / analyzing.total * 100 : 0) + "%" }} /></div>
-        </div>
-      ) : bulk ? (
-        <Dashboard bulk={bulk} tokens={labels} openDrill={openDrill} showKind={showKind} noun={noun} />
-      ) : (
-        <p className="note">Preparing…</p>
-      )}
-    </div>
-  );
-}
-
-function Sidebar({ side, nav, setNav, openGroups, setOpenGroups, menu, workspace, foot }) {
-  return (
-    <div className={"side" + (side ? "" : " collapsed")}>
-      <div className="wshead" title={workspace.sub}>
-        <span className="ico">{workspace.ico}</span>
-        <span className="lbl">{workspace.title}<div>{workspace.sub}</div></span>
-      </div>
-      <div className="menu">
-        {menu.map((m) => {
-          const hasItems = !!m.items;
-          const isOpen = openGroups.has(m.id);
-          const active = nav === m.id;
-          return (
-            <div key={m.id} className={"mgroup" + (isOpen ? " open" : "")}>
-              <div className={"mhead" + (active ? " active" : "")}
-                onClick={() => {
-                  if (hasItems) setOpenGroups((s) => { const c = new Set(s); if (c.has(m.id)) c.delete(m.id); else c.add(m.id); return c; });
-                  else setNav(m.id);
-                }}>
-                <span className="ico">{m.ico}</span>
-                <span className="lbl">{m.label}<div style={{ fontSize: 12.5, fontWeight: 400, color: "var(--side-muted)" }}>{m.desc}</div></span>
-                {m.wip && <span className="wip">WIP</span>}
-                {hasItems && <span className="chev">▶</span>}
-              </div>
-              {hasItems && (
-                <div className="sub">
-                  {m.items.map((it) => (
-                    <div key={it.id} className={"subitem" + (nav === it.id ? " active" : "") + (it.ready ? "" : " disabled")}
-                      onClick={() => it.ready && setNav(it.id)}>
-                      <span className="dot" /> {it.label}{!it.ready && <span className="wip" style={{ marginLeft: 6 }}>soon</span>}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <div className="foot">{foot}</div>
-    </div>
-  );
-}
-
-function ProjectPick({ picked, onFolder, canEnter, enter, names, setNames }) {
-  const N = clean(names);
-  return (
-    <div>
-      <h2 className="page">▤ Visualizer · Monolith to monolith</h2>
-      <div className="crumb">Step 1 — load the three Visualizer projects, then start the comparison.</div>
-      <div className="rules">
-        Upload the <b>three project folders</b> — <b>{N[0].name}</b> (base), <b>{N[1].name}</b> (customised) and <b>{N[2].name}</b> (new release). The tool
-        walks each project and inventories its <b>forms</b>, <b>form controllers</b>, and <b>MVC extensions</b> (business &amp;
-        presentation controllers). Everything runs in your browser — nothing is uploaded.
-      </div>
-      <VersionNames ws="ui" value={names} onChange={setNames} />
-      <div className="folders">
-        {N.map((meta, i) => (
-          <div key={PROJ_KEYS[i]} className={"folder" + (picked[i] ? " filled" : "")}>
-            <h3>{meta.name || "—"}{meta.sub ? ` — ${meta.sub}` : ""}</h3>
-            <div className="cnt">{picked[i] ? picked[i].counts.controllers : 0}</div>
-            <div className="cl">controllers detected</div>
-            <label className="pick">Choose {meta.name || "this"} folder
-              <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onFolder(i, e.target.files)} />
-            </label>
-            {picked[i] && <div className="sub2">{picked[i].counts.forms} forms · {picked[i].counts.business} business · {picked[i].counts.presentation} presentation · {picked[i].counts.components} components</div>}
-          </div>
-        ))}
-      </div>
-      <div style={{ marginTop: 14 }}>
-        <button className="btn" disabled={!canEnter} onClick={enter}>Start comparison →</button>
-        <span className="tag" style={{ marginLeft: 10 }}>{N[0].name} + {N[1].name} required · {N[2].name} recommended.</span>
-      </div>
-    </div>
-  );
-}
-
-function FabricUpload({ fab, onFabFolder, canEnter, enter, names, setNames }) {
-  const N = clean(names);
-  return (
-    <div>
-      <h2 className="page">≋ Fabric · Fabric app comparison</h2>
-      <div className="crumb">Step 1 — load the two exported Fabric apps, then start the comparison.</div>
-      <div className="rules">
-        Pick each exported Fabric app folder — the folder that contains <code>Apps/</code> (Identity, Integration, Object,
-        Orchestration, Workflow services). Jars in <code>_JARs</code> are compared in <b>Java JARs</b>. Everything runs in your browser — only the Java JARs view sends jars to the local dev server to decompile them, and they never leave this machine.
-      </div>
-      <VersionNames ws="fabric" value={names} onChange={setNames} />
-      <FabricPickers fab={fab} onFabFolder={onFabFolder} labels={N.map((x) => x.name)} subs={N.map((x) => x.sub)} />
-      <div style={{ marginTop: 14 }}>
-        <button className="btn" disabled={!canEnter} onClick={enter}>Start comparison →</button>
-        <span className="tag" style={{ marginLeft: 10 }}>Any two exports are enough · all three adds the retrofit view.</span>
-      </div>
-    </div>
-  );
-}
-
-function Landing({ status, done, open, labels }) {
-  return (
-    <div>
-      <h2 className="page">Choose a comparison</h2>
-      <div className="crumb">Each workspace has its own uploads and its own menu. You can switch between them at any time — loaded data is kept.</div>
-      <div className="wsgrid">
-        {Object.entries(WORKSPACES).map(([k, w]) => (
-          <div key={k} className={"wscard" + (done[k] ? " done" : "")} onClick={() => open(k)}>
-            <div className="wsico">{w.ico}</div>
-            <div className="wstitle">{w.title} <span>· {w.sub}</span></div>
-            <p>{w.desc(labels[k])}</p>
-            <div className="wscovers">{w.covers.map((c) => <span key={c}>{c}</span>)}</div>
-            <div className="wsfoot">
-              <span className={"wsstatus" + (done[k] ? " ok" : "")}>{status[k]}</span>
-              <span className="btn">{done[k] ? "Open →" : "Upload & compare →"}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Home({ picked, goto, names }) {
-  const base = picked[0] && picked[0].counts;
-  const metric = (i, field) => (picked[i] ? picked[i].counts[field] : "—");
-  const delta = (i, field) => {
-    if (i === 0 || !picked[i] || !base) return null;
-    const d = picked[i].counts[field] - base[field];
-    if (d === 0) return null;
-    return <span className={"delta " + (d > 0 ? "up" : "down")}>{d > 0 ? "+" : ""}{d}</span>;
-  };
-  const FIELDS = [["forms", "Forms"], ["controllers", "Controllers"], ["business", "Business Ctrl"], ["presentation", "Presentation Ctrl"], ["components", "Components"]];
-  return (
-    <div>
-      <h2 className="page">Project Overview</h2>
-      <div className="crumb">Inventory across the three projects — open FormForge or CtrlSync from the menu to compare.</div>
-      <div className="projgrid">
-        {names.map((meta, i) => (
-          <div key={PROJ_KEYS[i]} className={"projcard " + PROJ_KEYS[i]}>
-            <div className="top">
-              <div><b style={{ fontSize: 15 }}>{meta.name}</b><div className="tag2">{meta.sub}</div></div>
-              {picked[i] ? <span className="tag2">{picked[i].fileCount} files</span> : <span className="tag2">not loaded</span>}
-            </div>
-            <div className="metrics">
-              {FIELDS.map(([f, l]) => (
-                <div className="metric" key={f}>
-                  <div className="mv">{metric(i, f)}{delta(i, f)}</div>
-                  <div className="ml">{l}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-      <div style={{ marginTop: 18 }}>
-        <button className="btn" onClick={() => goto("forms")}>Compare forms →</button>{" "}
-        <button className="btn" onClick={() => goto("controllers")}>Analyze controller retrofit →</button>{" "}
-        <button className="btn" onClick={() => goto("comps")}>Compare components →</button>
-      </div>
-    </div>
-  );
-}
-
-function Wip({ title, icon }) {
-  return (
-    <div>
-      <h2 className="page">{title}</h2>
-      <div className="wipbox">
-        <div className="big">{icon}</div>
-        <h3>Work in progress</h3>
-        <p>This module is being designed and will be committed soon. For now, <b>Controller Retrofit</b> is available.</p>
-      </div>
-    </div>
-  );
-}
-
-/* ============================ per-controller report ============================ */
-function Report({ model, tab, setTab, member, setMember, view, setView, widgets = true }) {
-  const [O, C, N] = model.labels;
-  const bc = {};
-  Object.values(model.members).forEach((x) => { if (x.bucket) bc[x.bucket] = (bc[x.bucket] || 0) + 1; });
-  const tabs = [["overview", "Overview"], ["genuine", `Genuine Changes (${C}→${O})`]];
-  if (model.hasNew) tabs.push(["threeway", "3-Way + Buckets"], ["checklist", "Retrofit Checklist"]);
-  if (model.hasNew && widgets) tabs.push(["widgets", "Widget Remap"]);
-  const gotoMember = (name) => { setMember(name); setTab("genuine"); };
-  return (
-    <div>
-      <div className="cards">
-        {model.labels.map((l) => <div className="card" key={l}><div className="n">{model.counts[l]}</div><div className="l">{l} members</div></div>)}
-        <div className="card"><div className="n">{model.genuine.length}</div><div className="l">{C} vs {O} changes</div></div>
-        {model.hasNew && <div className="card"><div className="n">{[1, 2, 3, 4, 5].map((k) => bc[k] || 0).join("/")}</div><div className="l">buckets 1·2·3·4·5</div></div>}
-      </div>
-      <div className="tabs">
-        {tabs.map(([k, t]) => <div key={k} className={"tab" + (k === tab ? " active" : "")} onClick={() => setTab(k)}>{t}</div>)}
-      </div>
-      <div className="view">
-        {tab === "overview" && <Overview model={model} O={O} C={C} N={N} />}
-        {tab === "genuine" && <Genuine model={model} O={O} C={C} N={N} member={member} setMember={setMember} view={view} setView={setView} />}
-        {tab === "threeway" && <ThreeWay model={model} O={O} C={C} N={N} gotoMember={gotoMember} />}
-        {tab === "checklist" && <Checklist model={model} />}
-        {tab === "widgets" && <Widgets model={model} />}
-      </div>
-    </div>
-  );
-}
-
-function Overview({ model, O, C, N }) {
-  return (
-    <div>
-      <p className="note"><b>{O}</b> = old base · <b>{C}</b> = customisation on {O} · <b>{N || "—"}</b> = new base. Each {C} change must be re-expressed on {N || "the new base"}.</p>
-      <table>
-        <thead><tr><th>Module / class</th>{model.labels.map((l) => <th key={l}>{l}</th>)}</tr></thead>
-        <tbody><tr><td>define()</td>{model.labels.map((l) => <td key={l} className="mono">{model.moduleNames[l] ? `"${model.moduleNames[l]}"` : "(anonymous)"}</td>)}</tr></tbody>
-      </table>
-      {model.hasNew && (
-        <>
-          <h3>Customisations to retrofit onto {N}</h3>
-          <table>
-            <thead><tr><th>Member</th><th>Change</th><th>Bucket</th><th>Note</th></tr></thead>
-            <tbody>{model.genuine.map((n) => { const x = model.members[n]; return <tr key={n}><td><b>{n}</b></td><td><span className={"pill " + x.change}>{x.change}</span></td><td className={"b" + (x.bucket || "q")}>{x.bucket ? "Bucket " + x.bucket : ""}</td><td>{x.note}</td></tr>; })}</tbody>
-          </table>
-        </>
-      )}
-    </div>
-  );
-}
-
-function Genuine({ model, O, C, N, member, setMember, view, setView }) {
-  if (!model.genuine.length) return <p>No changes detected.</p>;
-  const cur = member && model.genuine.includes(member) ? member : model.genuine[0];
-  const x = model.members[cur];
-  const views = [["OLD_CUST", `${O} vs ${C}`]];
-  if (model.hasNew) views.push(["OLD_NEW", `${O} vs ${N}`], ["CUST_NEW", `${C} vs ${N}`], ["ALL3", "All 3"]);
-  const pairMap = { OLD_CUST: [O, C], OLD_NEW: [O, N], CUST_NEW: [C, N] };
-  const av = model.hasNew ? view : "OLD_CUST";
-  return (
-    <div className="split">
-      <div className="memberlist">
-        {model.genuine.map((n) => { const m = model.members[n]; return (
-          <div key={n} className={"memrow" + (n === cur ? " sel" : "")} onClick={() => setMember(n)}>
-            <b>{n}</b> <span className={"pill " + (m.change || "")}>{m.change}</span> {m.bucket && <span className={"pill b" + m.bucket}>B{m.bucket}</span>}
-            {m.dups && Object.keys(m.dups).length > 0 && <span className="pill duppill" title="Defined more than once in the file — the later definition wins at runtime">defined {Object.entries(m.dups).map(([l, c]) => `${c}× in ${l}`).join(", ")}</span>}
-            {model.hints && model.hints[n] && <div className="tag" style={{ color: "var(--accent)" }}>{model.hints[n]}</div>}
-            <div className="tag">{m.kind}{model.hasNew ? ` · in ${N}: ${m.inNew || ""}` : ""}</div>
-          </div>); })}
-      </div>
-      <div>
-        <h3 style={{ margin: "0 0 4px" }}>{cur}{model.hints && model.hints[cur] && <span className="tag" style={{ marginLeft: 8 }}>{model.hints[cur]}</span>}</h3>
-        <div className="tag">kind: {x.kind} · change: {x.change || "—"} {x.bucket ? "· bucket " + x.bucket : ""}</div>
-        {x.note && <div className="note">{x.note}</div>}
-        <div className="seg">{views.map(([k, t]) => <button key={k} className={k === av ? "on" : ""} onClick={() => setView(k)}>{t}</button>)}</div>
-        {av === "ALL3" ? (
-          <>
-            <div className="legend"><span style={{ background: "var(--add-bg)" }}>green = added vs {O}</span> <span style={{ background: "var(--del-bg)" }}>red = missing vs {O}</span> <span style={{ background: "var(--chg-bg)" }}>amber = {O} line changed in a branch</span></div>
-            <ThreeCol base={x.bodies[O]} custom={x.bodies[C]} next={x.bodies[N]} lo={O} lc={C} ln={N} />
-          </>
-        ) : (() => { const [la, lb] = pairMap[av]; return (
-          <>
-            <div className="legend"><span style={{ background: "var(--del-bg)" }}>red = only in {la}</span> <span style={{ background: "var(--add-bg)" }}>green = only in {lb}</span></div>
-            <TwoCol aBody={x.bodies[la]} bBody={x.bodies[lb]} la={la} lb={lb} />
-          </>); })()}
-      </div>
-    </div>
-  );
-}
-
-function ThreeWay({ model, O, C, N, gotoMember }) {
-  const rows = Object.keys(model.members).filter((n) => model.members[n].note);
-  return (
-    <div>
-      <p className="note">Members with a {C} delta vs {O}. Click a row to inspect the diff.</p>
-      <table>
-        <thead><tr><th>#</th><th>Member</th><th>{O}</th><th>{C}</th><th>{N}</th><th>Bucket</th><th>Note</th></tr></thead>
-        <tbody>{rows.map((n, i) => { const x = model.members[n]; const mk = (l) => (x.present[l] ? "Y" : "–"); return (
-          <tr key={n} style={{ cursor: "pointer" }} onClick={() => gotoMember(n)}>
-            <td>{i + 1}</td><td><b>{n}</b></td>
-            <td style={{ textAlign: "center" }}>{mk(O)}</td><td style={{ textAlign: "center" }}>{mk(C)}</td><td style={{ textAlign: "center" }}>{mk(N)}</td>
-            <td className={"b" + (x.bucket || "q")} style={{ textAlign: "center" }}>{x.bucket}</td><td>{x.note}</td>
-          </tr>); })}</tbody>
-      </table>
-    </div>
-  );
-}
-
-function Widgets({ model }) {
-  const w = model.widgets.filter((x) => x.remap);
-  return (
-    <div>
-      <p className="note">Widgets whose presence differs across versions — a likely field/index remap. A <span style={{ background: "var(--del-bg)", padding: "0 6px" }}>0</span> means the widget is absent (form-layer work).</p>
-      <table>
-        <thead><tr><th>Widget token</th>{model.labels.map((l) => <th key={l}>{l}</th>)}</tr></thead>
-        <tbody>{w.map((x) => (
-          <tr key={x.token}><td className="mono">{x.token}</td>{model.labels.map((l) => <td key={l} style={{ textAlign: "center", background: x.counts[l] === 0 ? "var(--del-bg)" : undefined }}>{x.counts[l]}</td>)}</tr>
-        ))}</tbody>
-      </table>
-      <p className="tag">{w.length} of {model.widgets.length} widget tokens differ.</p>
-    </div>
-  );
-}
-
-/* ============================ controllers dashboard ============================ */
-function Dashboard({ bulk, tokens, openDrill, showKind, noun = "controllers" }) {
-  const [BASE, CUST] = tokens;
-  const [q, setQ] = useState("");
-  const [onlyChanged, setOnlyChanged] = useState(true);
-  const KINDS = ["Business", "Presentation", "Extension"];
-  const [kinds, setKinds] = useState(new Set(KINDS));
-  const toggleKind = (k) => setKinds((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
-  const [sort, setSort] = useState({ key: "changes", dir: "desc" });
-
-  const rows = bulk.results.map((r, i) => {
-    const bcc = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
-    if (r.model) Object.values(r.model.members).forEach((x) => { if (x.bucket && bcc[x.bucket] !== undefined) bcc[x.bucket]++; });
-    return { ...r, i, changes: r.model ? r.model.genuine.length : 0, conflicts: bcc[2], customOnly: bcc[4], bc: bcc };
-  });
-  const okRows = rows.filter((r) => r.model);
-  const agg = {
-    total: bulk.results.length, changed: okRows.filter((r) => r.changes > 0).length,
-    changes: okRows.reduce((s, r) => s + r.changes, 0),
-    conflicts: okRows.reduce((s, r) => s + r.conflicts, 0),
-    customOnly: okRows.reduce((s, r) => s + r.customOnly, 0),
-  };
-  let viewRows = rows.filter((r) => (!onlyChanged || r.changes > 0) && (!showKind || kinds.has(r.kind))
-    && (!q || r.base.toLowerCase().includes(q.toLowerCase()) || (r.path || "").toLowerCase().includes(q.toLowerCase())));
-  const dir = sort.dir === "asc" ? 1 : -1;
-  viewRows = [...viewRows].sort((a, b) => sort.key === "name" ? dir * a.base.localeCompare(b.base) : dir * ((a[sort.key] || 0) - (b[sort.key] || 0)) || a.base.localeCompare(b.base));
-  const top = okRows.filter((r) => r.changes > 0).sort((a, b) => b.changes - a.changes).slice(0, 10);
-  const maxC = Math.max(1, ...top.map((r) => r.changes));
-  const setSortKey = (key) => setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
-  const arrow = (key) => (sort.key === key ? (sort.dir === "asc" ? " ▲" : " ▼") : "");
-
-  const exportCsv = () => {
-    const out = [[showKind ? "module" : "controller", "type", "path", "member", "change", "bucket", "in_new", "note"]];
-    okRows.forEach((r) => r.model.genuine.forEach((n) => { const x = r.model.members[n]; out.push([r.base, r.kind || "", r.path || "", n, x.change, x.bucket, x.inNew || "", (x.note || "").replace(/\s+/g, " ")]); }));
-    const csv = out.map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(",")).join("\n");
-    const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = `${noun}_changes.csv`; a.click();
-  };
-  const BucketBar = ({ bc }) => { const tot = [1, 2, 3, 4, 5].reduce((s, k) => s + bc[k], 0) || 1; return (
-    <span className="bucketbar" title={`clean:${bc[1]} conflict:${bc[2]} in-new:${bc[3]} custom-only:${bc[4]} new-only:${bc[5]}`}>
-      {[1, 2, 3, 4, 5].map((k) => bc[k] > 0 ? <i key={k} className={"s" + k} style={{ width: (bc[k] / tot) * 120 + "px" }} /> : null)}
-    </span>); };
-
-  return (
-    <div>
-      <div className="cards">
-        <div className="card"><div className="n">{agg.total}</div><div className="l">{noun}</div></div>
-        <div className="card"><div className="n">{agg.changed}</div><div className="l">customised ({CUST}≠{BASE})</div></div>
-        <div className="card"><div className="n">{agg.changes}</div><div className="l">total changes</div></div>
-        <div className="card"><div className="n" style={{ color: "var(--chg-mark)" }}>{agg.conflicts}</div><div className="l">conflicts (bucket 2)</div></div>
-        <div className="card"><div className="n">{agg.customOnly}</div><div className="l">custom-only (bucket 4)</div></div>
-      </div>
-      {top.length > 0 && (
-        <div className="chart">
-          <div className="tag" style={{ marginBottom: 2 }}>Top controllers by change volume — click to open</div>
-          {top.map((r) => (
-            <div className="row" key={r.path || r.base}>
-              <span className="cname" onClick={() => openDrill(r.i)} title={r.path || r.base}>{r.base}{r.kind ? ` · ${r.kind}` : ""}</span>
-              <span className="bar" style={{ width: (r.changes / maxC) * 100 + "%" }} />
-              <span style={{ textAlign: "right" }}>{r.changes}</span>
-            </div>
-          ))}
+          })}
         </div>
       )}
-      <div className="searchbar">
-        <input type="text" placeholder={`Search ${noun}…`} value={q} onChange={(e) => setQ(e.target.value)} />
-        <span className={"chip" + (onlyChanged ? " on" : "")} onClick={() => setOnlyChanged((v) => !v)}>{onlyChanged ? "✓ " : ""}only changed</span>
-        {showKind && KINDS.map((k) => (
-          <span key={k} className={"chip" + (kinds.has(k) ? " on" : "")} onClick={() => toggleKind(k)}>{kinds.has(k) ? "✓ " : ""}{k}</span>
-        ))}
-        <span className="tag">{viewRows.length} shown</span>
-        <span className="spacer" />
-        <button className="btn" onClick={exportCsv}>Export changes (CSV)</button>
-      </div>
-      <div className="view" style={{ borderRadius: 10, border: "1px solid var(--line)", maxHeight: "60vh", overflow: "auto" }}>
-        <table>
-          <thead>
-            <tr>
-              <th className="sortable" onClick={() => setSortKey("name")}>Controller{arrow("name")}</th>
-              {showKind && <th>Type</th>}
-              {tokens.map((t) => <th key={t} style={{ textAlign: "center" }}>{t}</th>)}
-              <th className="sortable" style={{ textAlign: "center" }} onClick={() => setSortKey("changes")}>Changes{arrow("changes")}</th>
-              <th className="sortable" style={{ textAlign: "center" }} onClick={() => setSortKey("conflicts")}>Conflicts{arrow("conflicts")}</th>
-              <th>Buckets</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {viewRows.map((r) => { const clickable = !!r.model; return (
-              <tr key={r.path || r.base} className={clickable ? "clickable" : ""} style={{ cursor: clickable ? "pointer" : "default" }} onClick={() => clickable && openDrill(r.i)}>
-                <td><b style={{ color: clickable ? "var(--accent)" : "inherit" }}>{r.base}</b>{r.path && <div className="tag" style={{ maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.path}</div>}</td>
-                {showKind && <td><span className={"kindpill k-" + r.kind}>{r.kind}</span></td>}
-                {tokens.map((t) => <td key={t} style={{ textAlign: "center" }}>{(r.present || []).includes(t) ? "✓" : "–"}</td>)}
-                <td style={{ textAlign: "center", fontWeight: 700 }}>{r.model ? r.changes : "—"}</td>
-                <td style={{ textAlign: "center", color: r.conflicts ? "var(--chg-mark)" : "inherit" }}>{r.model ? r.conflicts : "—"}</td>
-                <td>{r.model ? <BucketBar bc={r.bc} /> : "—"}</td>
-                <td>{r.model ? <span className="pill Added">ok</span> : r.incomplete ? <span className="pill Modified">missing</span> : <span className="pill Removed">parse err</span>}</td>
-              </tr>); })}
-          </tbody>
-        </table>
-      </div>
-      <p className="tag" style={{ marginTop: 8 }}>
-        Buckets: <span className="chip" style={{ background: "var(--add-mark)", color: "#fff" }}>1 clean</span> <span className="chip" style={{ background: "var(--chg-mark)", color: "#111" }}>2 conflict</span> <span className="chip" style={{ background: "#5b8def", color: "#fff" }}>3 in-new</span> <span className="chip" style={{ background: "#4caf7d", color: "#fff" }}>4 custom-only</span> <span className="chip" style={{ background: "#c9cdd4", color: "#111" }}>5 new-only</span>
-      </p>
+
+      {namesOpen && entered && T.names && (
+        <VersionNamesPanel key={T.names} ws={T.names} value={P.names[T.names]} onClose={() => setNamesOpen(false)} onApply={(list) => P.setNamesFor(T.names, list)} />
+      )}
+      {perf && <PerfPanel onClose={() => setPerf(false)} />}
+      {palette && <Palette onClose={() => setPalette(false)} go={go} />}
+
+      {tool === "projects" && <div className="startpage wide"><ProjectsPage open={openTool} /></div>}
+      {[...mounted].map((t) => {
+        const r = t === tool ? route : last[t] || { tool: t };
+        return <ToolSlot key={t} t={t} active={t === tool} nav={r.nav || TOOLS[t].home} deep={!!r.nav} item={r.item} go={go} side={side} openGroups={openGroups} setOpenGroups={setOpenGroups} />;
+      })}
     </div>
   );
 }
+
+// one opened tool; redraws only when its own page, the menu state or its visibility changes (not when search or
+// the timings panel opens). deep: the address names a page inside the tool (a bookmark, Back, or a reload)
+const ToolSlot = memo(function ToolSlot({ t, active, nav, deep, item, go, side, openGroups, setOpenGroups }) {
+  const View = TOOL_VIEWS[t];
+  const nav2 = useMemo(() => ({
+    setNav: (n) => go({ tool: t, nav: n }),
+    setItem: (k, o) => go({ tool: t, nav, item: k }, o),
+    go: (x, o) => go({ tool: t, nav, ...x }, o),
+  }), [t, nav, go]);
+  return (
+    <div style={active ? undefined : { display: "none" }}>
+      <Suspense fallback={<div className="startpage"><p className="note">Loading {TOOLS[t].title}…</p></div>}>
+        <View active={active} nav={nav} deep={deep} item={item} {...nav2} side={side} openGroups={openGroups} setOpenGroups={setOpenGroups} />
+      </Suspense>
+    </div>
+  );
+});

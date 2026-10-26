@@ -1,22 +1,18 @@
-// Version names per workspace. The comparison logic works by slot role (base / customised / new release);
-// names are only what people see, so any naming scheme works (R21 · KBZ · R26, 2021 · Bank · 2026, …).
+// Version names: one set for the Visualizer projects (every compare / explore / convert tool) and one for the Fabric
+// exports. The comparison logic works by slot role (base / customised / new release); names are only what people see,
+// so any naming scheme works (R21 · KBZ · R26, 2021 · Bank · 2026, …).
 export const ROLES = {
   base: { label: "Base version", hint: "the original release your customisation started from" },
   custom: { label: "Customised version", hint: "the base plus your own changes" },
   target: { label: "New release", hint: "the version you are moving to" },
 };
-export const SLOTS = { ui: ["base", "custom", "target"], ma: ["base", "custom", "target"], fabric: ["base", "custom", "target"] };
+export const SLOTS = { viz: ["base", "custom", "target"], fabric: ["base", "custom", "target"] };
 
 export const DEFAULT_NAMES = {
-  ui: [
-    { name: "R21", sub: "Base project · July 2021" },
-    { name: "KBZ", sub: "Customised · modified" },
-    { name: "R26", sub: "Latest · R26.0.2" },
-  ],
-  ma: [
-    { name: "R21", sub: "Base monolith" },
-    { name: "KBZ", sub: "Customised monolith" },
-    { name: "R26", sub: "Micro apps" },
+  viz: [
+    { name: "R21", sub: "Base version" },
+    { name: "KBZ", sub: "Customised" },
+    { name: "R26", sub: "New release" },
   ],
   fabric: [
     { name: "R21", sub: "Base Fabric app" },
@@ -31,6 +27,8 @@ export function loadNames() {
     const saved = JSON.parse(localStorage.getItem(KEY) || "null");
     if (!saved) return DEFAULT_NAMES;
     const out = {};
+    // earlier versions kept separate names per workspace: the micro-app workspace's names carry over
+    if (!saved.viz) saved.viz = saved.ma || saved.ui;
     for (const ws of Object.keys(DEFAULT_NAMES)) {
       const s = saved[ws];
       out[ws] = Array.isArray(s) && s.length === DEFAULT_NAMES[ws].length && !validate(s) ? s : DEFAULT_NAMES[ws];

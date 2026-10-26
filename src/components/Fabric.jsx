@@ -15,7 +15,8 @@ const CATS = ["logic", "environment", "format"];
 const CAT_LABEL = { logic: "Logic", environment: "Environment", format: "Export format" };
 
 // ---------------------------------------------------------------- folder pickers
-export function FabricPickers({ fab, onFabFolder, labels, subs = [] }) {
+// pickers[i]: where export i comes from (the Projects page slot, replaceable in place)
+export function FabricPickers({ fab, pickers, labels, subs = [] }) {
   return (
     <div className="folders" style={{ gridTemplateColumns: "repeat(2,1fr)" }}>
       {labels.map((l, i) => (
@@ -23,9 +24,7 @@ export function FabricPickers({ fab, onFabFolder, labels, subs = [] }) {
           <h3>{l || "—"} — {subs[i] || "Fabric app export"}</h3>
           <div className="cnt">{fab[i] ? Object.values(fab[i].counts).reduce((a, b) => a + b, 0) : 0}</div>
           <div className="cl">services detected</div>
-          <label className="pick">Choose {l} export folder
-            <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onFabFolder(i, e.target.files)} />
-          </label>
+          {pickers[i]}
           {fab[i] && (
             <div className="sub2">
               {fab[i].app || "app"} · {TYPES.filter((t) => fab[i].counts[t]).map((t) => `${fab[i].counts[t]} ${t}`).join(" · ")}
@@ -40,7 +39,7 @@ export function FabricPickers({ fab, onFabFolder, labels, subs = [] }) {
 
 // ---------------------------------------------------------------- page
 // names: all three version names (base, customised, new release); pair: the two slot positions being compared.
-export function LoomSync({ type, fab, onFabFolder, names, pairs, pair, setPair, bulk, analyzing, retro, retroProgress, sel, setSel, goType }) {
+export function LoomSync({ type, fab, pickers, names, pairs, pair, setPair, bulk, analyzing, retro, retroProgress, sel, setSel, goType }) {
   const title = type ? `LoomSync · ${type} services` : "LoomSync · Fabric overview";
   const labels = pair ? [names[pair[0]], names[pair[1]]] : names.slice(1);
   const header = (
@@ -66,7 +65,7 @@ export function LoomSync({ type, fab, onFabFolder, names, pairs, pair, setPair, 
       <div>
         {header}
         <div className="rules">Pick at least two exported Fabric app folders (the folder that contains <code>Apps/</code>). Files are read in your browser only.</div>
-        <FabricPickers fab={fab} onFabFolder={onFabFolder} labels={names} />
+        <FabricPickers fab={fab} pickers={pickers} labels={names} />
       </div>
     );
   }

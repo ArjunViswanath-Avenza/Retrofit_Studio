@@ -6,6 +6,7 @@
 import { unzipSync } from "fflate";
 import { classModel, classText, jarBase, jarVersion } from "./classfile.js";
 import { hash } from "./filediff.js";
+import { yieldNow } from "./jobs.js";
 
 export { jarBase, jarVersion };
 
@@ -61,7 +62,7 @@ export async function indexExport(scan, onProgress) {
   let done = 0;
   for (const name of names) {
     if (onProgress) onProgress({ done, total: names.length, jar: name });
-    await new Promise((r) => setTimeout(r));
+    await yieldNow();
     const f = jars.get(name);
     const j = { name, base: jarBase(name), version: jarVersion(name), size: f.size, classes: {}, resources: {}, error: null };
     try {
@@ -230,7 +231,9 @@ export async function loadDecompilerStatus() {
   if (dc.status) return dc.status;
   try {
     const r = await fetch("/api/decompiler/status");
-    dc.status = r.ok && /json/.test(r.headers.get("content-type") || "") ? await r.json() : { available: false, reason: "the decompile service runs with the dev server (npm run dev) — not in this build" };
+    const isJson = /json/.test(r.headers.get("content-type") || "");
+    if (r.status === 403 && isJson) dc.status = { available: false, reason: `${(await r.json()).error} — open the app at http://localhost to decompile` };
+    else dc.status = r.ok && isJson ? await r.json() : { available: false, reason: "the decompile service runs with the dev server (npm run dev) — not in this build" };
   } catch (e) { dc.status = { available: false, reason: `decompile service not reachable (${e.message})` }; }
   emit();
   return dc.status;
@@ -264,7 +267,7 @@ async function pump() {
     dc.byFile.set(it.file, { state: "running", name: it.name, t0: Date.now() });
     emit();
     try {
-      const r = await fetch("/api/decompile", { method: "POST", headers: { "x-jar-name": encodeURIComponent(it.name), "Content-Type": "application/octet-stream" }, body: it.file });
+      const r = await fetch("/api/decompile", { method: "POST", headers: { "x-jar-name": encodeURIComponent(it.name), "Content-Type": "application/octet-stream" }, body: it.file instanceof Blob ? it.file : await it.file.arrayBuffer() });
       const j = await r.json();
       if (!r.ok || j.error) throw new Error(j.error || `HTTP ${r.status}`);
       for (const k of Object.keys(j.files)) j.files[k] = j.files[k].replace(/\r\n?/g, "\n");

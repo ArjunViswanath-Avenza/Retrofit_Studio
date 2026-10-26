@@ -85,12 +85,13 @@ const Badge = ({ status }) => <span className={`vz-badge vz-${status}`}>{STATUS[
 const KindTag = ({ kind }) => <span className={`vz-kind vz-k-${kind}`}>{KIND[kind]}</span>;
 
 // ---------------------------------------------------------------- upload
-export function VisualizeUpload({ channel, setChannel, pick, onFolder, go }) {
+// picker: which loaded folder to use (components/../app/projects SlotSelect)
+export function VisualizeUpload({ channel, setChannel, pick, picker, go }) {
   const inv = pick && pick.inv;
   return (
     <div>
       <h2 className="page">◎ Visualize · Monolith to micro apps</h2>
-      <div className="crumb">Choose the channel and the monolith project, then visualize where every module and form goes.</div>
+      <div className="crumb">Choose the channel and one of the loaded monoliths, then visualize where every module and form goes.</div>
       <div className="rules">
         Uses the built-in map of <b>R26 {R26_MAP.release}</b> ({Object.keys(R26_MAP.apps).length} projects, read once from the R26 apps) —
         no R26 upload needed. Nothing is changed or written: this is the picture of the conversion, for review and agreement before anything is converted.
@@ -107,9 +108,7 @@ export function VisualizeUpload({ channel, setChannel, pick, onFolder, go }) {
           <div className="cl">e.g. {channel === "web" ? "konyonlinebanking2021" : "konymobilebanking2021"}</div>
           <div className="cnt">{inv ? inv.forms.length.toLocaleString() : 0}</div>
           <div className="cl">{channel === "web" ? "web" : "mobile / tablet / watch"} forms</div>
-          <label className="pick">Choose folder
-            <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onFolder(e.target.files)} />
-          </label>
+          {picker}
           {pick && <div className="sub2">{pick.name} · {new Set(inv.forms.map((f) => f.module)).size} modules with screens · {inv.mvc.size} MVC extension modules · {pick.files.length.toLocaleString()} files</div>}
         </div>
       </div>

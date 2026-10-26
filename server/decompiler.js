@@ -2,11 +2,13 @@
 // Runs inside the Vite dev server (npm run dev): the browser posts a jar, this decompiles it with Vineflower on the
 // machine's Java and returns every file of the result as text. Results are cached by the jar's SHA-256, so each
 // jar is decompiled once. Without Java (or outside the dev server) the app falls back to its in-browser bytecode view.
+// Requests are answered only when they come to localhost (server/local.js).
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { isLocal, refuse } from "./local.js";
 
 const ROOT = path.resolve(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..");
 const VINEFLOWER = path.join(ROOT, "tools", "vineflower-1.11.1.jar");
@@ -76,10 +78,12 @@ export function decompilerPlugin() {
     name: "retrofit-decompiler",
     configureServer(server) {
       server.middlewares.use("/api/decompiler/status", async (req, res) => {
+        if (!isLocal(req)) return refuse(res, "decompile service");
         res.setHeader("Content-Type", "application/json");
         res.end(JSON.stringify(await getStatus()));
       });
       server.middlewares.use("/api/decompile", (req, res) => {
+        if (!isLocal(req)) return refuse(res, "decompile service");
         if (req.method !== "POST") { res.statusCode = 405; res.end(); return; }
         const chunks = [];
         req.on("data", (c) => chunks.push(c));

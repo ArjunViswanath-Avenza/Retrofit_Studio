@@ -9,18 +9,20 @@ import { FormLocator } from "./Locator";
 import { triggerText } from "../lib/journey";
 import { widgetInfo } from "../lib/preview";
 import { getClass, analyzeFn, traceEntry, formActions, formArrivals, formWidgets, componentIndex, i18nText, LAYER_LABEL, clsLabel } from "../lib/blueprint";
+import { yieldNow } from "../lib/jobs";
 
 const nf = (n) => Number(n || 0).toLocaleString("en-US");
 const CH_LABEL = { desktop: "Web (desktop)", mobile: "Mobile", tablet: "Tablet", watch: "Watch" };
 const short = (rel) => rel.split("/").slice(-2).join("/");
 
 /* ================================================================ upload */
-export function BlueprintUpload({ pick, onFolder, ch, setCh, go, busy }) {
+// picker: which loaded folder to use (app/projects SlotSelect)
+export function BlueprintUpload({ pick, picker, ch, setCh, go, busy }) {
   const chans = pick ? Object.keys(pick.channels) : [];
   return (
     <div>
       <h2 className="page">⌗ Blueprint · a monolith, part by part</h2>
-      <div className="crumb">Pick one Visualizer project folder (Online Banking or Mobile Banking). Everything is read in your browser.</div>
+      <div className="crumb">Pick one of the loaded monoliths (Online Banking or Mobile Banking). Everything is read in your browser.</div>
       <div className="rules">
         Blueprint lays the project out as <b>modules</b> → <b>forms</b>, <b>form controllers</b>, <b>presentation</b> and <b>business controllers</b>.
         Open a form to see its screen, every action a user can trigger, the data it sends and receives, and a <b>code flow breakdown</b> that follows one action
@@ -32,9 +34,7 @@ export function BlueprintUpload({ pick, onFolder, ch, setCh, go, busy }) {
           <h3>Monolith project</h3>
           <div className="cnt">{pick ? nf(pick.files.size) : 0}</div>
           <div className="cl">project files</div>
-          <label className="pick">Choose project folder
-            <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onFolder(e.target.files)} />
-          </label>
+          {picker}
           {pick && <div className="sub2"><b>{pick.name}</b>{!pick.hasProps && <span className="bp-warn"> · no projectProperties.json — is this a Visualizer project?</span>}
             {Object.keys(pick.excluded).length > 0 && <div className="tag">not read (build output): {Object.entries(pick.excluded).map(([d, n]) => `${d} ${nf(n)}`).join(" · ")}</div>}</div>}
         </div>
@@ -52,14 +52,6 @@ export function BlueprintUpload({ pick, onFolder, ch, setCh, go, busy }) {
     </div>
   );
 }
-
-export const BP_MENU = [
-  { id: "bp-home", ico: "⌗", label: "Project blueprint", desc: "Every module, part by part" },
-  { id: "bp-module", ico: "▦", label: "Module", desc: "Forms, controllers, presentation, business" },
-  { id: "bp-form", ico: "▤", label: "Form", desc: "Screen, actions, data in & out" },
-  { id: "bp-flow", ico: "⇄", label: "Code flow breakdown", desc: "One action to the model and back" },
-  { id: "bp-locate", ico: "⌖", label: "Action locator", desc: "Where every action lives, project-wide" },
-];
 
 /* ================================================================ project blueprint */
 export function BlueprintHome({ idx, open }) {
@@ -303,7 +295,7 @@ export function BlueprintForm({ idx, formKey, setForm, tab, setTab, openFlow, ca
         if (!alive) return;
         const e = all[i];
         out[e.id] = summarize(await cachedTrace(idx, cache, e, f));
-        if (i % 6 === 5) { setProg({ done: i + 1, total: all.length }); await new Promise((r) => setTimeout(r)); }
+        if (i % 6 === 5) { setProg({ done: i + 1, total: all.length }); await yieldNow(); }
       }
       if (alive) { setSum(out); setProg(null); }
     })();

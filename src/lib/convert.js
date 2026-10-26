@@ -15,6 +15,7 @@
 
 import { channelScan, CHANNELS, alignMicroApps } from "./microapps.js";
 import { R26_MAP, nearestApp } from "./mapplan.js";
+import { yieldNow } from "./jobs.js";
 
 // build output and VCS folders — never part of a project's source
 export const SKIP_DIRS = [".git", "node_modules", "jssrc", "binaries", "build", "temp", "ssm_temp"];
@@ -556,7 +557,7 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
       for (const m of t.matchAll(/["']([\w$]+)["']/g)) { const tp = templateByTop.get(m[1]); if (tp && (isJs || x.c.cat !== "template" || tp !== x.c.template)) r.templates.add(tp); }
     });
     onProgress({ step: "Reading forms, widgets and templates", done: Math.min(i + 250, scan.length), total: scan.length });
-    await new Promise((r) => setTimeout(r));
+    await yieldNow();
   }
   for (const x of files) { const u = unitOf(x.c); if (u && (x.c.cat === "widget" || x.c.cat === "template")) unitRefs(u); }
 
@@ -678,7 +679,7 @@ export async function convert(monoFiles, ma, plan, onProgress = () => {}) {
     }
     for (const l of log) { if (l.warn) warnings.push({ path: l.path, line: l.line, message: `${l.rule}: ${l.before} ${l.after}` }); else rewrites.push(l); }
     if (text !== raw) { o.text = text; delete o.f; }
-    if (i % 200 === 0) { onProgress({ step: "Rewriting references", done: i, total: js.length }); await new Promise((r) => setTimeout(r)); }
+    if (i % 200 === 0) { onProgress({ step: "Rewriting references", done: i, total: js.length }); await yieldNow(); }
   }
   if (!navPatched && files.some((x) => /mvcextensions\/NavigationManager\//.test(x.rel))) warnings.push({ message: "NavigationManager was not adapted — check the report" });
 

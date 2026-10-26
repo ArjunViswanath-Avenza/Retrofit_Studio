@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { fileStatus, formattedText, diffTexts } from "../lib/filediff";
 import { mvcKind } from "../lib/analyzer";
 import { roleOf } from "../lib/components";
+import { yieldNow } from "../lib/jobs";
 
 const DEFAULT_LABELS = ["R21", "KBZ", "R26"];
 const PAIRS = [[0, 1], [0, 2], [1, 2]];
@@ -88,7 +89,7 @@ async function scanPair(cat, picked, ai, bi, onProgress, alive) {
     } else {
       status[k] = await fileStatus(fa, fb, kind);
     }
-    if (i % 8 === 0) { onProgress({ done: i + 1, total: keys.length }); await new Promise((r) => setTimeout(r)); }
+    if (i % 8 === 0) { onProgress({ done: i + 1, total: keys.length }); await yieldNow(); }
   }
   onProgress({ done: keys.length, total: keys.length });
   return { keys, status, detail };
@@ -239,7 +240,7 @@ function FileCompare({ fileKey, fa, fb, la, lb, status }) {
     (async () => {
       try {
         const [a, b] = await Promise.all([fa ? formattedText(fa) : null, fb ? formattedText(fb) : null]);
-        await new Promise((r) => setTimeout(r));
+        await yieldNow();
         const d = diffTexts(a, b);
         if (alive) setRes({ sections: [{ id: fileKey, d }] });
       } catch (e) {

@@ -14,7 +14,8 @@ const statusText = (L) => ({
 const ORDER = ["mapped", "ambiguous", "none", "tablet", "stub"];
 
 // ---------------------------------------------------------------- upload screen
-export function MicroAppUpload({ channel, setChannel, pick, onFolder, canEnter, enter, aligning, labels: L, editor }) {
+// pickers[i]: where folder i comes from (the Projects page slot, replaceable in place)
+export function MicroAppUpload({ channel, setChannel, pick, pickers, canEnter, enter, aligning, labels: L }) {
   const C = CHANNELS[channel];
   const monoForms = (s) => (s ? [...s.forms.keys()].filter((k) => C.mono.includes(k.split("/")[0])).length : 0);
   const slots = [
@@ -24,15 +25,14 @@ export function MicroAppUpload({ channel, setChannel, pick, onFolder, canEnter, 
   ];
   return (
     <div>
-      <h2 className="page">❖ Visualizer · Monolith to micro app</h2>
-      <div className="crumb">Step 1 — choose the channel and load the two monoliths and the {L[2]} micro-app folder.</div>
+      <h2 className="page">❖ Compare · Monolith → micro app</h2>
+      <div className="crumb">The two monoliths and the {L[2]} micro-app folder from the Projects page — choose the channel and start.</div>
       <div className="rules">
         {L[2]} splits the app into micro apps (<code>CardsMA</code>, <code>TransfersMA</code>, … plus shared <code>CommonsMA</code> /{" "}
         <code>ResourcesMA</code>), each carrying desktop and mobile forms. Every monolith form, controller, presentation / business
         controller and user widget is located in its micro app by name (and by content when a name exists in several micro apps),
         then compared {L.join(" · ")} with the same engines as the monolith workspace. Zips and build folders are never read.
       </div>
-      {editor}
       <div className="toolbar">
         <b>Channel</b>
         <div className="seg">
@@ -48,9 +48,7 @@ export function MicroAppUpload({ channel, setChannel, pick, onFolder, canEnter, 
             <h3>{s.title || "—"} — {s.sub}</h3>
             <div className="cnt">{pick[i] ? (i === 2 ? pick[i].apps.size : monoForms(pick[i])) : 0}</div>
             <div className="cl">{i === 2 ? "projects (micro apps + container)" : `${C.mono.join("/")} forms`}</div>
-            <label className="pick">Choose {s.title} folder
-              <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onFolder(i, e.target.files)} />
-            </label>
+            {pickers[i]}
             {pick[i] && (
               <div className="sub2">
                 {i === 2

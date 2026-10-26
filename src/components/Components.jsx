@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { FormTree } from "./Forms";
 import { OverallView } from "./Overall";
 import { partsOf } from "../lib/components";
+import { useMore, MoreRows } from "../app/More";
 
 // aspects shown per component; "structure" and "files" have their own views, the rest are member models
 const ASPECT_TABS = [
@@ -79,6 +80,7 @@ function CompDashboard({ bulk, labels, setDrill }) {
     out.sort((x, y) => { const a = val(x), b = val(y); return (a < b ? -1 : a > b ? 1 : 0) * dir || x.r.name.localeCompare(y.r.name); });
     return out;
   }, [R, q, show, sort]);
+  const page = useMore(rows);
 
   const top = useMemo(() => [...R].filter((r) => r.total > 0).sort((a, b) => b.total - a.total).slice(0, 12), [R]);
   const max = top.length ? top[0].total : 1;
@@ -163,7 +165,7 @@ function CompDashboard({ bulk, labels, setDrill }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map(({ r, i }) => (
+          {page.shown.map(({ r, i }) => (
             <tr key={r.key} className="clickable" onClick={() => setDrill(i)} style={{ cursor: "pointer" }}>
               <td><b>{r.name}</b><div className="tag">{r.namespace}</div></td>
               {labels.map((l) => <td key={l} style={{ textAlign: "center" }}>{r.present[l] ? <span className="a">✓</span> : <span className="tag">—</span>}</td>)}
@@ -178,6 +180,7 @@ function CompDashboard({ bulk, labels, setDrill }) {
               <td style={{ textAlign: "center" }}><b>{r.total || ""}</b></td>
             </tr>
           ))}
+          <MoreRows {...page} shown={page.shown.length} cols={20} />
           {!rows.length && <tr><td colSpan={20} className="note">No components match the filters.</td></tr>}
         </tbody>
       </table>

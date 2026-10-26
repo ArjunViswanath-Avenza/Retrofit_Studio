@@ -5,7 +5,8 @@ import { SKIP_DIRS, convert, writeOut, checkComposite } from "../lib/convert";
 const NAME_OK = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 // ---------------------------------------------------------------- step 1: inputs
-export function ConverterUpload({ channel, setChannel, pick, onFolder, canPlan, onPlan, planning }) {
+// pickers[i]: where folder i comes from (the loaded folders on the Projects page)
+export function ConverterUpload({ channel, setChannel, pick, pickers, canPlan, onPlan, planning }) {
   const slots = [
     { title: "Monolith to convert", sub: `the customised ${channel === "web" ? "online" : "mobile"} banking project (e.g. ${channel === "web" ? "konyonlinebanking2021" : "konymobilebanking2021"})`, what: "files" },
     { title: "Micro-app reference", sub: "the R26 folder holding the container + all *MA projects — used for structure only", what: "projects" },
@@ -13,7 +14,7 @@ export function ConverterUpload({ channel, setChannel, pick, onFolder, canPlan, 
   return (
     <div>
       <h2 className="page">⇢ Converter · Monolith to micro app</h2>
-      <div className="crumb">Step 1 — choose the channel, the monolith to convert and the micro-app reference.</div>
+      <div className="crumb">Step 1 — choose the channel, the monolith to convert and the micro-app reference from the loaded folders.</div>
       <div className="rules">
         The converter rebuilds the monolith as micro-app projects — a container, one micro app per feature, plus shared
         <code> CommonsMA</code> and <code>ResourcesMA</code>. <b>Only the monolith's own code is used.</b> The micro-app reference
@@ -33,9 +34,7 @@ export function ConverterUpload({ channel, setChannel, pick, onFolder, canPlan, 
             <div className="cl">{s.sub}</div>
             <div className="cnt">{pick[i] ? (i === 0 ? pick[i].raw.files.length.toLocaleString() : pick[i].apps.size) : 0}</div>
             <div className="cl">{s.what}</div>
-            <label className="pick">Choose folder
-              <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onFolder(i, e.target.files)} />
-            </label>
+            {pickers[i]}
             {pick[i] && i === 0 && <div className="sub2">{pick[i].scan.counts.forms} forms · {pick[i].scan.counts.controllers} controllers · {pick[i].scan.counts.components} user widgets · {pick[i].raw.skipped.toLocaleString()} build / VCS files skipped</div>}
             {pick[i] && i === 1 && <div className="sub2">{[...pick[i].apps.keys()].filter((n) => /MA$/.test(n)).length} micro apps</div>}
           </div>

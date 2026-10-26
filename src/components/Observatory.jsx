@@ -5,6 +5,7 @@
 import { useState, useEffect, useMemo, useRef, useCallback, memo } from "react";
 import { surveyForm, linksOf, galaxyOf } from "../lib/observatory";
 import "./observatory.css";
+import { yieldNow } from "../lib/jobs";
 
 const nf = (n) => Number(n || 0).toLocaleString("en-US");
 const hash = (s) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return (h >>> 0) / 4294967296; };
@@ -12,18 +13,14 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lastSeg = (ns) => (ns || "").split(".").pop();
 const KIND_LABEL = { nav: "Navigation", comp: "Shared components", call: "Code calls" };
 
-export const OB_MENU = [
-  { id: "ob-sky", ico: "✦", label: "Sky", desc: "Galaxies, solar systems, every connection" },
-  { id: "ob-catalogue", ico: "☰", label: "Star catalogue", desc: "Every galaxy and system, searchable" },
-];
-
 /* ================================================================ upload */
-export function ObservatoryUpload({ pick, onFolder, ch, setCh, go, busy }) {
+// picker: which loaded folder to use (app/projects SlotSelect)
+export function ObservatoryUpload({ pick, picker, ch, setCh, go, busy }) {
   const chans = pick ? Object.keys(pick.channels) : [];
   return (
     <div>
       <h2 className="page">✦ Observatory · the whole project as a sky</h2>
-      <div className="crumb">Pick one folder: a monolith, a single micro app, or a micro-app project (a folder of micro apps). Everything is read in your browser.</div>
+      <div className="crumb">Pick one of the loaded folders: a monolith or a micro-app project (a folder of micro apps). Everything is read in your browser.</div>
       <div className="rules">
         Every <b>module</b> (or <b>micro app</b>) becomes a <b>galaxy</b> and every <b>form</b> a <b>solar system</b> — the form is the sun, its controller,
         components and the presentation / business code it calls are in orbit, and the services it reaches are far stars. Lines between them show
@@ -34,9 +31,7 @@ export function ObservatoryUpload({ pick, onFolder, ch, setCh, go, busy }) {
           <h3>Project folder</h3>
           <div className="cnt">{pick ? nf(pick.projects.length) : 0}</div>
           <div className="cl">{pick && pick.kind === "microapps" ? "micro apps" : "project"}</div>
-          <label className="pick">Choose folder
-            <input type="file" webkitdirectory="" directory="" multiple style={{ display: "none" }} onChange={(e) => onFolder(e.target.files)} />
-          </label>
+          {picker}
           {pick && (pick.projects.length ? <div className="sub2"><b>{pick.name}</b> · {pick.kind === "microapps" ? `micro-app project: ${pick.projects.map((p) => p.name).slice(0, 6).join(", ")}${pick.projects.length > 6 ? "…" : ""}` : "one Visualizer project"}</div>
             : <div className="sub2 bp-warn">No projectProperties.json found — is this a Visualizer project?</div>)}
         </div>
@@ -123,7 +118,7 @@ export function ObservatoryWorkspace({ U, nav, setNav }) {
         if (!surveys.current.has(id)) {
           try { surveys.current.set(id, await surveyForm(U, U.sysById.get(id))); } catch { surveys.current.set(id, { comps: [], calls: [], navs: [], services: [], ctrlCalls: [], actions: 0, ctrl: null, reached: new Map(), failed: true }); }
           n++;
-          if (n % 6 === 0 || urgent) { setVer((v) => v + 1); setDone(surveys.current.size); await new Promise((r) => setTimeout(r)); }
+          if (n % 6 === 0 || urgent) { setVer((v) => v + 1); setDone(surveys.current.size); await yieldNow(); }
         }
       }
       if (alive) { setVer((v) => v + 1); setDone(surveys.current.size); setRunning(false); }

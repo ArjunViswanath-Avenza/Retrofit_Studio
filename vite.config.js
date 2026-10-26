@@ -2,12 +2,14 @@ import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 import { decompilerPlugin } from './server/decompiler.js'
 import { writerPlugin } from './server/writer.js'
+import { filesPlugin } from './server/files.js'
 
 // https://vite.dev/config/
 export default defineConfig({
   // decompilerPlugin: local Vineflower decompile service for the Java JAR comparison (dev server only)
   // writerPlugin: writes Converter files the browser refused (dev server only)
-  plugins: [react(), decompilerPlugin(), writerPlugin()],
+  // filesPlugin: opens project folders by path and reads them in batches, kept in memory (dev server only)
+  plugins: [react(), decompilerPlugin(), writerPlugin(), filesPlugin()],
   // Only the app's own entry is scanned for dependencies. Without this Vite crawls every .html file under the
   // project folder — including the multi-GB trial projects in Apps_Trial — and the page hangs while it loads.
   optimizeDeps: {
