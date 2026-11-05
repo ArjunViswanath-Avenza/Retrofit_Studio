@@ -8,8 +8,8 @@
 //   modules/require/<other>.js                helper scripts (DAOs, extra controllers)  -> member diff
 // Every aspect except structure is reduced to the {members} shape so buildModel/classify apply unchanged.
 import { extract, extractComponent, buildModel } from "./analyzer.js";
-import { summarizeForm } from "./forms.js";
-import { yieldNow, pool } from "./jobs.js";
+import { buildFormDiff } from "./forms.js";
+import { yieldNow, pool, bgTurn } from "./jobs.js";
 
 // "<root>/userwidgets/<component>/<rel>" -> { key: component folder, rel }
 export function compPath(relPath) {
@@ -184,7 +184,16 @@ export async function analyzeComponents(maps, labels, onProgress) {
       for (const p of parts) W.push(p ? await readWidgetJson(p.structure) : {});
       for (const [a, b] of STRUCT_PAIRS) {
         if (b >= n || (!parts[a] && !parts[b])) continue;
-        r.structure[`${a}${b}`] = summarizeForm(W[a], W[b]);
+        const d = buildFormDiff(W[a], W[b]);
+        r.structure[`${a}${b}`] = { ...d.totals, propWidgets: d.propWidgets, leaves: d.leaves, byCategory: d.byCategory };
+        // per changed widget, the parameters that changed — lets the dashboard recount with some parameters excluded
+        r.wkeys = r.wkeys || {};
+        r.wkeys[`${a}${b}`] = [];
+        for (const nd of d.nodes.values()) if (nd.props.length) r.wkeys[`${a}${b}`].push([...new Set(nd.props.map((x) => x.key))]);
+        r.keyCat = r.keyCat || {};
+        for (const nd of d.nodes.values()) for (const x of nd.props) r.keyCat[x.key] = x.category;
+        r.rel = r.rel || {};
+        r.rel[`${a}${b}`] = { moved: d.totals.moved, reordered: d.totals.reordered };
       }
       r.widgetCounts = Object.fromEntries(L.map((l, i) => [l, Object.keys(W[i]).length]));
     } catch (e) {
@@ -194,7 +203,7 @@ export async function analyzeComponents(maps, labels, onProgress) {
     const g = (m) => (m ? m.genuine.length : 0);
     const s = r.structure["01"];
     r.changes = {
-      structure: s ? s.added + s.removed + s.moved + s.propWidgets : 0,
+      structure: s ? s.added + s.removed + s.moved + s.propWidgets + (s.reordered || 0) : 0,
       controller: g(r.models.controller), actions: g(r.models.actions), contract: g(r.models.contract),
       deps: g(r.models.deps), scripts: g(r.models.scripts),
     };
@@ -210,3 +219,92 @@ export async function analyzeComponents(maps, labels, onProgress) {
   return results;
 }
 
+
+// ---------------------------------------------------------------- where each component is used
+// A form, template or component places a component as a UserWidgetInstance whose "sourceUserWidget" is the kuid of
+// the component's root widget (the child of its userwidgetmodel wrapper). Per version: Map(componentKey -> [{ kind:
+// "form" | "template" | "component", where, app, via: instance widget id }]). signal: runs as a background job.
+const SRC = /"sourceUserWidget"\s*:\s*"([^"]+)"/;
+export async function componentUsage(picked, onProgress, signal) {
+  const all = [];
+  const total = picked.reduce((t, p) => t + (p && p.comps ? [...(p.forms || new Map()).values()].reduce((x, m) => x + m.size, 0) : 0), 0);
+  let done = 0;
+  for (const p of picked) {
+    if (!p || !p.comps) { all.push(null); continue; }
+    // kuid of every component's root widget
+    const byKuid = new Map();
+    const keys = [...p.comps.keys()];
+    await pool(keys.length, 16, async (k) => {
+      const parts = partsOf(keys[k], p.comps.get(keys[k]));
+      if (!parts) return;
+      const W = await readWidgetJson(parts.structure);
+      for (const w of Object.values(W)) if (w && w.parent === "userwidgetmodel" && w.kuid) byKuid.set(w.kuid, keys[k]);
+    });
+    const use = new Map();
+    const add = (kuid, e) => { const key = byKuid.get(kuid); if (!key) return; if (!use.has(key)) use.set(key, []); use.get(key).push(e); };
+    const scan = async (items, make) => {
+      for (let i = 0; i < items.length; i += 256) {
+        const part = items.slice(i, i + 256);
+        const texts = await Promise.all(part.map((x) => x.f.text()));
+        texts.forEach((t, j) => { if (!t.includes("sourceUserWidget")) return; const m = t.match(SRC); if (m) add(m[1], make(part[j])); });
+        if (signal) await bgTurn(signal); else await yieldNow();
+      }
+    };
+    const formItems = [];
+    for (const [fk, widgets] of p.forms || []) for (const [id, f] of widgets) formItems.push({ fk, id, f });
+    for (let i = 0; i < formItems.length; i += 2048) {
+      await scan(formItems.slice(i, i + 2048), (x) => ({ kind: "form", where: x.fk, app: p.formApp ? p.formApp.get(x.fk) || null : null, via: x.id }));
+      done += Math.min(2048, formItems.length - i);
+      onProgress({ done, total, running: true });
+    }
+    const tplItems = [];
+    for (const [tk, widgets] of p.segs || []) for (const [id, f] of widgets) tplItems.push({ tk, id, f });
+    await scan(tplItems, (x) => ({ kind: "template", where: x.tk, app: p.segMeta && p.segMeta.get(x.tk) ? p.segMeta.get(x.tk).app : null, via: x.id }));
+    const compItems = [];
+    for (const [ck, files] of p.comps) for (const [rel, f] of files) if (/^userwidgetmodel\.sm\/[^/]+\.json$/i.test(rel)) compItems.push({ ck, id: rel.slice(19, -5), f });
+    await scan(compItems, (x) => ({ kind: "component", where: x.ck, app: p.compApp ? p.compApp.get(x.ck) || null : null, via: x.id }));
+    all.push(use);
+  }
+  onProgress({ done: total, total, running: false });
+  return all;
+}
+
+// every line that names one widget of a component, in one version: the component's own scripts, then wherever it is
+// used — the instance's settings / overrides (dataDiffs) and the form's controller, a parent component's scripts
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const ctrlOfForm = (fk) => { const s = fk.split("/"); const name = s.pop().replace(/\.sm$/i, ""); return [...s, `${name}Controller`, `${name}Controller.js`].join("/"); };
+export async function componentRefs(p, key, id, uses) {
+  const files = p && p.comps && p.comps.get(key);
+  if (!files) return [];
+  const re = new RegExp(`(^|[^\\w$])${esc(id)}(?![\\w$])`);
+  // the files to search, in the order they are listed (a busy component sits on many forms: read them together)
+  const tasks = [];
+  const scan = (file, group) => { if (file) tasks.push({ file, group }); };
+  for (const [rel, f] of files) if (/\.js$/i.test(rel)) scan(f, { kind: "component", label: rel.split("/").pop(), sub: "the component's own code", path: key });
+  const done = new Set();
+  for (const e of uses || []) {
+    if (e.kind === "form") {
+      const name = e.where.split("/").pop().replace(/\.sm$/i, "");
+      const inst = p.forms && p.forms.get(e.where) ? p.forms.get(e.where).get(e.via) : null;
+      scan(inst, { kind: "form", label: name, sub: `instance ${e.via} · its settings and overrides`, app: e.app, path: e.where });
+      if (done.has(`fc|${e.where}`)) continue;
+      done.add(`fc|${e.where}`);
+      scan(p.controllers && p.controllers.get(ctrlOfForm(e.where)), { kind: "form", label: name, sub: `${name}Controller.js`, app: e.app, path: e.where });
+    } else if (e.kind === "component") {
+      if (done.has(`c|${e.where}`)) continue;
+      done.add(`c|${e.where}`);
+      for (const [rel, f] of (p.comps && p.comps.get(e.where)) || []) if (/\.js$/i.test(rel) || rel === `userwidgetmodel.sm/${e.via}.json`) scan(f, { kind: "component", label: e.where.split(".").pop(), sub: rel, app: e.app, path: e.where });
+    } else if (e.kind === "template") {
+      const inst = p.segs && p.segs.get(e.where) ? p.segs.get(e.where).get(e.via) : null;
+      scan(inst, { kind: "template", label: e.where.split("/").pop(), sub: `instance ${e.via} in the segment template`, app: e.app, path: e.where });
+    }
+  }
+  const found = new Array(tasks.length);
+  await pool(tasks.length, 24, async (i) => {
+    const L = (await tasks[i].file.text()).replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n").split("\n");
+    const hits = [];
+    L.forEach((t, k) => { if (re.test(t)) hits.push({ line: k + 1, text: t.trim().slice(0, 240), from: Math.max(1, k - 2), ctx: L.slice(Math.max(0, k - 3), k + 4) }); });
+    if (hits.length) found[i] = { ...tasks[i].group, hits: hits.slice(0, 40), more: Math.max(0, hits.length - 40) };
+  });
+  return found.filter(Boolean);
+}

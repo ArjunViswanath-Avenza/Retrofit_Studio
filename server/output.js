@@ -1,15 +1,12 @@
-// Output writer (dev server only): TemplateTwin's "Move to R26" writes merged segment templates into a separate output
-// folder laid out like the R26 project (<root>/<MA>/templates/<ch>/segments/<name>.sm/). It never writes into a
+// Output writer (dev server only): "Move to R26" (TemplateTwin, COMP-are) writes merged segment templates / user widgets
+// into a separate output folder laid out like the R26 project (<root>/<MA>/templates/<ch>/segments/<name>.sm/,
+// <root>/<MA>/userwidgets/<component>/userwidgetmodel.sm/). It never writes into a
 // Visualizer project: any folder on the way that holds projectProperties.json (R21, KBZ, R26 or any micro app) is
-// refused. Answers only on localhost.
+// refused. Answers only on localhost (server/local.js).
 import fs from "node:fs";
 import path from "node:path";
+import { isLocal, refuse } from "./local.js";
 
-const isLocal = (req) => {
-  const host = String(req.headers.host || "").replace(/:\d+$/, "").replace(/^\[|\]$/g, "").toLowerCase();
-  const addr = String((req.socket && req.socket.remoteAddress) || "");
-  return ["localhost", "127.0.0.1", "::1"].includes(host) && /^(::1|127\.|::ffff:127\.)/.test(addr);
-};
 const json = (res, code, body) => { res.statusCode = code; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(body)); };
 
 // the Visualizer project folder that contains dir (itself or a parent), if any
@@ -27,9 +24,9 @@ export function outputPlugin() {
   return {
     name: "retrofit-output",
     configureServer(server) {
-      // POST /api/output/template { root, dir: "<MA>/templates/<ch>/segments/<name>.sm", files: { "<id>.json": text } }
+      // POST /api/output/template { root, dir: "<MA>/…/<name>.sm", files: { "<id>.json": text } }
       server.middlewares.use("/api/output/template", (req, res) => {
-        if (!isLocal(req)) return json(res, 403, { error: "the output writer answers only on localhost" });
+        if (!isLocal(req)) return refuse(res, "output writer");
         if (req.method !== "POST") return json(res, 405, { error: "POST only" });
         const chunks = [];
         req.on("data", (c) => chunks.push(c));

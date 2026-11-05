@@ -8,7 +8,7 @@ import { FormsView } from "../components/Forms";
 import { OverallView } from "../components/Overall";
 import { ComponentsView } from "../components/Components";
 import { SegmentsView } from "../components/Segments";
-import { analyzeComponents } from "../lib/components";
+import { analyzeComponents, componentUsage } from "../lib/components";
 import { analyzeSegments, segmentUsage, segmentFiles } from "../lib/segments";
 import { scanFolder } from "../lib/scan";
 import { MicroAppUpload, MicroAppMap } from "../components/MicroApps";
@@ -97,6 +97,7 @@ export function CompareMA(props) {
   });
   useAutoStart(props, ready && !aligned && !(aligning && aligning.running), () => start(true));
   const segReport = useMemo(() => (aligned && aligned.report.segs ? new Map(aligned.report.segs.map((r) => [r.key, r])) : null), [aligned]);
+  const compReport = useMemo(() => (aligned && aligned.report.comps ? new Map(aligned.report.comps.map((r) => [r.key, r])) : null), [aligned]);
   useToolMeta("ma", { entered: !!aligned, status: aligned ? `Comparing · ${CHANNELS[aligned.channel].label}` : ready ? "Ready" : null, reset: () => { setAligned(null); setAligning(null); } });
   if (!aligned) {
     return (
@@ -108,7 +109,7 @@ export function CompareMA(props) {
   }
   return (
     <Shell {...shellOf(props, TOOLS.ma.menu(labels), { ico: "❖", title: "Compare", sub: "Monolith → micro app" }, `${CHANNELS[aligned.channel].label} · ${aligned.picked[2].microApps} ${labels[2]} projects`)}>
-      <VisualizerWorkspace key={labels.join("|") + ver} tool="ma" picked={aligned.picked} labels={labels} segReport={segReport} {...props}
+      <VisualizerWorkspace key={labels.join("|") + ver} tool="ma" picked={aligned.picked} labels={labels} segReport={segReport} compReport={compReport} {...props}
         home={<MicroAppMap aligned={aligned} goto={props.setNav} labels={labels} />} />
     </Shell>
   );
@@ -147,7 +148,7 @@ async function analyzeSets(maps, extractor, meta, onProgress, labels) {
 const KEY_OF = { controllers: (r) => r.path, mvc: (r) => r.path, comps: (r) => r.key, segs: (r) => r.key };
 const fileName = (k) => k.split("/").pop().replace(/\.(sm|js)$/i, "");
 
-function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem, active, home, segReport }) {
+function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem, active, home, segReport, compReport }) {
   const [bulk, setBulk] = useState(null);
   const [analyzing, setAnalyzing] = useState(null);
   const [formScan, setFormScan] = useState({}); // per version-pair form property scan (kept across menu navigation)
@@ -163,6 +164,8 @@ function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem,
   const [segPicked, setSegPicked] = useState(null); // per version: { segs: template -> its files } for the Overall comparison
   const [segUsage, setSegUsage] = useState(null);
   const [segUsageProg, setSegUsageProg] = useState(null);
+  const [compUsage, setCompUsage] = useState(null);
+  const [compUsageProg, setCompUsageProg] = useState(null);
   const [tab, setTab] = useState("overview");
   const [member, setMember] = useState(null);
   const [view, setView] = useState("OLD_CUST");
@@ -211,9 +214,14 @@ function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem,
     loadSegFiles();
     loadSegUsage();
   });
+  const loadCompUsage = () => once("compUsage", "COMP-are · find where each component is used", async (signal) => {
+    setCompUsageProg({ done: 0, total: 1, running: true });
+    try { setCompUsage(await componentUsage(picked, setCompUsageProg, signal)); } catch (e) { if (!isStopped(e)) throw e; }
+  });
   const runComps = () => foreground("COMP-are · compare user widgets", async () => {
     const results = await analyzeComponents(picked.map((p) => (p ? p.comps : null)), labels, setCompAnalyzing);
     setCompBulk({ results });
+    loadCompUsage();
   });
 
   // run an analysis the first time its view is opened (once each, whatever re-runs the effect)
@@ -266,6 +274,7 @@ function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem,
         <ComponentsView picked={picked} labels={shown} bulk={compBulk} analyzing={compAnalyzing}
           drill={drillAt("comps")} setDrill={openAt("comps")}
           aspect={compAspect} setAspect={(k) => { setCompAspect(k); setMember(null); }} overall={overall} setOverall={setOverall}
+          report={compReport} usage={compUsage} usageProg={compUsageProg}
           renderReport={(model) => <Report model={model} {...reportProps} widgets={false} />} />
       )}
       {nav === "controllers" && (

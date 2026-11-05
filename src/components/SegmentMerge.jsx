@@ -1,12 +1,14 @@
-// TemplateTwin · Move to R26: KBZ's changes to one segment template, change by change, onto the R26 copies.
+// Move to R26 (TemplateTwin and COMP-are): KBZ's changes to one segment template or user widget, change by change,
+// onto its R26 copies.
 // R21 = base, KBZ = the customisation, R26 = target (lib/segmerge.js sorts every change: clean / already in R26 /
-// conflict / removal). Pick what moves, see KBZ · R26 now · the result drawn, then write the whole merged template
+// conflict / removal). Pick what moves, see KBZ · R26 now · the result drawn, then write the whole merged widget
 // folder for every ticked R26 copy into a separate output folder (server/output.js). Nothing is generated while a
 // conflict is undecided or an added widget has no parent.
 import { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { renderTemplate, previewAssets } from "../lib/preview";
 import { versionIndex } from "../lib/visual";
+import { partsOf } from "../lib/components";
 import { looseJson } from "../lib/blueprint";
 import { mergeRows, defaultChoice, applyMerge, dependencyIssues, fileStyle, templateFiles } from "../lib/segmerge";
 import "./widgetdialog.css";
@@ -52,37 +54,69 @@ function i18nKeys(p) {
   return i18nOf.get(p);
 }
 
-// the R26 copies of this template: the counterpart TemplateTwin chose, then every other copy
-function copiesOf(r, p26, x) {
-  const ch = r.channel;
+// what the popup merges — one segment template or one user widget:
+// { noun, name, ch, baseFiles, kbzFiles: Map(id -> File), copies: [{ app, label, best, score, path (output folder),
+//   files() -> { map: Map(id -> File), other: [names of non-widget files] } }] }
+
+// one widget folder inside one R26 micro app: its widget files and anything else lying in it
+function folderFiles(p26, app, dir) {
+  const map = new Map(), other = [];
+  for (const f of (p26.appFiles && p26.appFiles.get(app)) || []) {
+    const rel = (f.webkitRelativePath || "").replace(/\\/g, "/");
+    const k = rel.indexOf(dir);
+    if (k < 0) continue;
+    const rest = rel.slice(k + dir.length);
+    if (rest.includes("/")) continue;
+    if (/\.json$/i.test(rest)) map.set(rest.slice(0, -5), f); else other.push(rest);
+  }
+  return { map, other };
+}
+
+// a segment template: the R26 copy TemplateTwin compared, then every other copy
+export function segmentSource(r, picked, x) {
+  const p26 = picked[2], ch = r.channel;
   const list = [];
   const best = r.copies[2];
   if (best) list.push({ app: best.app, name: best.name, best: true });
   for (const a of (x && x.alts) || []) if (!list.some((c) => c.app === a.app && c.name === a.name)) list.push({ app: a.app, name: a.name, score: a.score });
-  return list.map((c) => ({ ...c, ch, path: `${c.app ? c.app + "/" : ""}templates/${ch}/segments/${c.name}.sm` }));
-}
-// one copy's widget files (Map id -> File) and anything else in its folder
-function copyFiles(c, p26, rKey, isBest) {
-  if (isBest && p26.segs && p26.segs.get(rKey)) {
-    const map = p26.segs.get(rKey);
-    return { map, other: otherFiles(c, p26) };
-  }
-  const map = new Map();
-  const files = (p26.appFiles && p26.appFiles.get(c.app)) || [];
-  const re = new RegExp(`/templates/${c.ch}/segments/${c.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.sm/([^/]+)\\.json$`);
-  for (const f of files) { const m = (f.webkitRelativePath || "").replace(/\\/g, "/").match(re); if (m) map.set(m[1], f); }
-  return { map, other: otherFiles(c, p26) };
-}
-function otherFiles(c, p26) {
-  const files = (p26.appFiles && p26.appFiles.get(c.app)) || [];
-  const dir = `/templates/${c.ch}/segments/${c.name}.sm/`;
-  return files.map((f) => (f.webkitRelativePath || "").replace(/\\/g, "/")).filter((p) => p.includes(dir) && !/\.json$/i.test(p)).map((p) => p.split("/").pop());
+  return {
+    noun: "template", name: r.name, ch,
+    baseFiles: picked[0].segs.get(r.key), kbzFiles: picked[1].segs.get(r.key),
+    copies: list.map((c) => ({
+      ...c, label: c.name, path: `${c.app ? c.app + "/" : ""}templates/${ch}/segments/${c.name}.sm`,
+      files: () => {
+        const f = folderFiles(p26, c.app, `/templates/${ch}/segments/${c.name}.sm/`);
+        return c.best && p26.segs && p26.segs.get(r.key) ? { ...f, map: p26.segs.get(r.key) } : f;
+      },
+    })),
+  };
 }
 
-export function SegmentMerge({ r, picked, labels, x, onClose }) {
+// a user widget: its userwidgetmodel.sm widget files; the R26 copy the micro-app map chose, then every other copy
+// (R26 may keep it under another namespace — the folder is written under R26's own name)
+export function componentSource(r, picked, x) {
+  const p26 = picked[2];
+  const structure = (p) => { const parts = p && p.comps && p.comps.get(r.key) ? partsOf(r.key, p.comps.get(r.key)) : null; return parts ? parts.structure : null; };
+  const base = { noun: "component", name: r.name, ch: "desktop", baseFiles: structure(picked[0]), kbzFiles: structure(picked[1]) };
+  // R26 as a monolith (monolith → monolith): one copy, in the project itself
+  if (p26 && !p26.appFiles) {
+    return { ...base, copies: p26.comps && p26.comps.has(r.key) ? [{ app: "", label: r.key, best: true, path: `userwidgets/${r.key}/userwidgetmodel.sm`, files: () => ({ map: structure(p26), other: [] }) }] : [] };
+  }
+  let list = x && x.copies && x.copies.length ? x.copies : [];
+  if (!list.length && p26 && p26.compApp && p26.compApp.get(r.key)) list = [{ app: p26.compApp.get(r.key), key: x && x.target ? x.target.key : r.key, score: null }];
+  return {
+    ...base,
+    copies: list.map((c, i) => ({
+      app: c.app, label: c.key, best: i === 0, score: c.score, path: `${c.app}/userwidgets/${c.key}/userwidgetmodel.sm`,
+      files: () => folderFiles(p26, c.app, `/userwidgets/${c.key}/userwidgetmodel.sm/`),
+    })),
+  };
+}
+
+export function SegmentMerge({ source, picked, labels, onClose }) {
   const [O, C, N] = labels;
   const p26 = picked[2];
-  const copies = useMemo(() => copiesOf(r, p26, x), [r, p26, x]);
+  const copies = source.copies;
   const [base, setBase] = useState(null); // { W0, W1 }
   const [data, setData] = useState({}); // copy index -> { W2, raw2, rows, style, other }
   const [include, setInclude] = useState(() => new Set([0]));
@@ -101,13 +135,13 @@ export function SegmentMerge({ r, picked, labels, x, onClose }) {
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [a, b] = await Promise.all([readSet(picked[0].segs.get(r.key)), readSet(picked[1].segs.get(r.key))]);
+      const [a, b] = await Promise.all([readSet(source.baseFiles), readSet(source.kbzFiles)]);
       if (alive) setBase({ W0: a.W, W1: b.W });
-      const ka = await previewAssets(versionIndex(picked[1], "", r.channel));
+      const ka = await previewAssets(versionIndex(picked[1], "", source.ch));
       if (alive) setAssets((s) => ({ ...s, kbz: ka }));
     })();
     return () => { alive = false; };
-  }, [picked, r.key, r.channel]);
+  }, [picked, source]);
   // a copy's files and rows, read when it is opened or ticked
   const loading = useRef(new Set());
   useEffect(() => {
@@ -117,16 +151,16 @@ export function SegmentMerge({ r, picked, labels, x, onClose }) {
       loading.current.add(i);
       (async () => {
         const c = copies[i];
-        const { map, other } = copyFiles(c, p26, r.key, !!c.best);
+        const { map, other } = c.files();
         const { W, raw } = await readSet(map);
         const rows = mergeRows(base.W0, base.W1, W);
         setData((d) => ({ ...d, [i]: { W2: W, raw2: raw, rows, style: fileStyle(Object.values(raw)[0]), other } }));
         setChoices((s) => ({ ...s, [i]: Object.fromEntries(rows.map((row) => [row.rid, defaultChoice(row)])) }));
-        const [ra, keys] = await Promise.all([previewAssets(versionIndex(p26, c.app, c.ch)), i18nKeys(p26)]);
+        const [ra, keys] = await Promise.all([previewAssets(versionIndex(p26, c.app, source.ch)), i18nKeys(p26)]);
         setAssets((s) => ({ ...s, [i]: ra, i18n: keys }));
       })();
     }
-  }, [base, active, include, copies, p26, r.key, data]);
+  }, [base, active, include, copies, p26, source, data]);
 
   const D = data[active];
   const ch = choices[active] || NONE;
@@ -217,7 +251,7 @@ export function SegmentMerge({ r, picked, labels, x, onClose }) {
     <div className="wd-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div className="wd mg" role="dialog" aria-label={`Move ${C} changes to ${N}`}>
         <div className="wd-head">
-          <div className="wd-title"><span className="wd-k">Move {C} changes to {N}</span><b className="mono">{r.name}</b>
+          <div className="wd-title"><span className="wd-k">Move {C} changes to {N}</span><b className="mono">{source.name}</b>
             <span className="tag">{O} = base · {C} = customisation · {N} = target</span></div>
           <div className="seg" style={{ margin: 0 }}>{WIDTHS.map(([w, l]) => <button key={w} className={width === w ? "on" : ""} onClick={() => setWidth(w)}>{l}</button>)}</div>
           <button className="wd-x" onClick={onClose} title="Close (Esc)">✕</button>
@@ -230,7 +264,7 @@ export function SegmentMerge({ r, picked, labels, x, onClose }) {
             return (
               <span key={i} className={"mg-copy" + (i === active ? " on" : "") + (include.has(i) ? " inc" : "")} onClick={() => setActive(i)}>
                 <input type="checkbox" checked={include.has(i)} onClick={(e) => e.stopPropagation()} onChange={() => setInclude((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; })} />
-                <b>{cp.app || "—"}</b>{cp.name !== r.name && <span className="tag"> as {cp.name}</span>}
+                <b>{cp.app || N}</b>{cp.label !== source.name && <span className="tag mono"> {source.noun === "component" ? cp.label : `as ${cp.label}`}</span>}
                 {cp.best ? <span className="mg-best">compared copy</span> : cp.score != null && <span className="tag"> {Math.round(cp.score * 100)}%</span>}
                 {include.has(i) && (b.length ? <span className="mg-blk" title={b.join(" · ")}>{b[0]}</span> : <span className="mg-ok">ready</span>)}
               </span>
@@ -267,7 +301,7 @@ export function SegmentMerge({ r, picked, labels, x, onClose }) {
                   </div>
                 )}
                 <div className="mg-list">
-                  {!groups.length && <p className="note" style={{ padding: 12 }}>{D.rows.length ? "No changes under these filters." : `${C} did not change this template compared with ${O} — nothing to move.`}</p>}
+                  {!groups.length && <p className="note" style={{ padding: 12 }}>{D.rows.length ? "No changes under these filters." : `${C} did not change this ${source.noun} compared with ${O} — nothing to move.`}</p>}
                   {groups.map(([wid, list]) => (
                     <div key={wid} className={"mg-w" + (sel === wid ? " sel" : "")}>
                       <div className="mg-wh" onClick={() => setSel(wid)}><b className="mono">{wid}</b><span className="tag">{list[0].wType}</span></div>
@@ -319,9 +353,9 @@ export function SegmentMerge({ r, picked, labels, x, onClose }) {
 
           <div className="mg-right">
             <div className="mg-panes">
-              <MergePane label={`${C} (customisation)`} p={picked[1]} app="" ch={r.channel} W={base && base.W1} width={width} sel={sel} onPick={setSel} />
-              <MergePane label={`${N} now${c && c.app ? ` · ${c.app}` : ""}`} p={p26} app={c && c.app} ch={r.channel} W={D && D.W2} width={width} sel={sel} marks={marks.now} onPick={setSel} />
-              <MergePane label={`Result${c && c.app ? ` · ${c.app}` : ""}`} p={p26} app={c && c.app} ch={r.channel} W={merged && merged.W} width={width} sel={sel} marks={marks.res} onPick={setSel} result />
+              <MergePane label={`${C} (customisation)`} p={picked[1]} app="" ch={source.ch} W={base && base.W1} width={width} sel={sel} onPick={setSel} />
+              <MergePane label={`${N} now${c && c.app ? ` · ${c.app}` : ""}`} p={p26} app={c && c.app} ch={source.ch} W={D && D.W2} width={width} sel={sel} marks={marks.now} onPick={setSel} />
+              <MergePane label={`Result${c && c.app ? ` · ${c.app}` : ""}`} p={p26} app={c && c.app} ch={source.ch} W={merged && merged.W} width={width} sel={sel} marks={marks.res} onPick={setSel} result />
             </div>
             {sel && D && (
               <div className="mg-detail">
@@ -336,8 +370,8 @@ export function SegmentMerge({ r, picked, labels, x, onClose }) {
           {issues.length > 0 && <details className="mg-issues"><summary>⚠ {issues.length} dependency warning{issues.length === 1 ? "" : "s"} for {c && c.app} — {C} values {N} may not have</summary>{issues.map((i, k) => <div key={k}><span className="mono">{i.wid}</span> · {i.text}</div>)}</details>}
           <div className="mg-out">
             <label>Output folder <input type="text" value={out} onChange={(e) => setOut(e.target.value)} placeholder="e.g. C:\Projects\KBZ\R26-merged — not inside a Visualizer project" /></label>
-            <button className="btn" disabled={!canGenerate} onClick={generate}>{gen && gen.running ? "Writing…" : `Generate ${include.size} template folder${include.size === 1 ? "" : "s"}`}</button>
-            <span className="tag">{!include.size ? "Tick at least one copy." : blocked.length ? `${copies[blocked[0][0]].app}: ${blocked[0][1].join(" · ")}` : !out.trim() ? "Give an output folder." : `Writes <output>\\<MA>\\templates\\${r.channel}\\segments\\<name>.sm — the whole folder, replaced if it is there.`}</span>
+            <button className="btn" disabled={!canGenerate} onClick={generate}>{gen && gen.running ? "Writing…" : `Generate ${include.size} ${source.noun} folder${include.size === 1 ? "" : "s"}`}</button>
+            <span className="tag">{!include.size ? "Tick at least one copy." : blocked.length ? `${copies[blocked[0][0]].app}: ${blocked[0][1].join(" · ")}` : !out.trim() ? "Give an output folder." : `Writes <output>/${copies[0] ? copies[0].path : ""}${include.size > 1 ? " and the other ticked copies" : ""} — the whole folder, replaced if it is there.`}</span>
           </div>
           {gen && gen.done && (
             <div className="mg-done">

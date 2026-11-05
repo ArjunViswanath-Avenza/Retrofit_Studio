@@ -25,11 +25,12 @@ export function background(label, fn) {
 
 // give the page a turn (input, drawing) between batches. A message, not setTimeout: timers are slowed to one a second
 // while the tab is in the background, which made long scans crawl whenever another tab was open
-const chan = typeof MessageChannel !== "undefined" ? new MessageChannel() : null;
+// (Node scripts that use the analysis libs get setImmediate: a message port would keep them from exiting)
+const inBrowser = typeof window !== "undefined";
+const chan = inBrowser && typeof MessageChannel !== "undefined" ? new MessageChannel() : null;
 const turns = [];
 if (chan) chan.port1.onmessage = () => { const r = turns.shift(); if (r) r(); };
-if (chan && chan.port1.unref) chan.port1.unref(); // Node scripts that use the analysis libs can still exit
-export const yieldNow = () => new Promise((r) => { if (chan) { turns.push(r); chan.port2.postMessage(0); } else setTimeout(r); });
+export const yieldNow = () => new Promise((r) => { if (chan) { turns.push(r); chan.port2.postMessage(0); } else if (typeof setImmediate === "function") setImmediate(r); else setTimeout(r); });
 
 // fn(i) for every i below n, conc at a time — their file reads go out together (one batch to the local file service,
 // or parallel reads of picked files) instead of one after another

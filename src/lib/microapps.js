@@ -279,7 +279,7 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
     let cands = r26Comps.get(n) || [];
     const fam = cands.filter((c) => !/\.Infinity(OLB|MB)\./.test(c.key) || C.family.test(c.key));
     if (fam.length) cands = fam;
-    if (cands.length === 1) Object.assign(row, { status: "mapped", method: "unique class name", target: cands[0] });
+    if (cands.length === 1) Object.assign(row, { status: "mapped", method: "unique class name", target: cands[0], copies: [{ app: cands[0].app, key: cands[0].key, score: null }] });
     else if (cands.length > 1) {
       const ids = widgetIds(ref("comps", k));
       const shared = (c) => (/^(Resources\w*|Commons)MA$/.test(c.app) ? 1 : 0);
@@ -287,6 +287,8 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
       const identical = scored[0].score >= 0.95 && scored[1].score >= 0.95;
       const clear = identical || scored[0].score - scored[1].score >= 0.05;
       Object.assign(row, { status: clear ? "mapped" : "ambiguous", method: `${cands.length} candidates — widget overlap ${Math.round(scored[0].score * 100)}%${identical ? " (same structure in several micro apps)" : ""}`, target: scored[0], alts: scored.slice(1).map((c) => `${c.key} (${Math.round(c.score * 100)}%)`) });
+      // every copy, best first (the Move-to-R26 popup can write any of them)
+      row.copies = scored.map((c) => ({ app: c.app, key: c.key, score: c.score }));
     }
     if (row.target) { out.comps.set(k, row.target.files); out.compApp.set(k, row.target.app); claimed.comps.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.key, key: row.target.key }; }
     report.comps.push(row);

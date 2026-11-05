@@ -26,7 +26,25 @@ const HL_CSS = `
 .kw.hl-sel>.kin,.krow.hl-sel>.kin{outline:3px solid #F26A21!important;outline-offset:-3px}
 `;
 
-export function SegmentVisual({ r, picked, labels, usage, excludeKeys }) {
+// TemplateTwin's Visual tab: a segment template's own adapter
+export function SegmentVisual(props) {
+  const { r, picked, usage } = props;
+  const adapter = useMemo(() => ({
+    noun: "template",
+    copyOf: (i) => r.copies[i],
+    filesOf: (i) => (picked[i] && picked[i].segs ? picked[i].segs.get(r.key) : null),
+    indexOf: (i) => templateIndex(picked[i], r.key),
+    refs: (i, id, uses) => widgetRefs(picked[i], r.key, id, uses),
+    usesOf: (i) => (usage && usage[i] ? usage[i].get(r.key) : null),
+    usageReady: !!usage,
+  }), [r, picked, usage]);
+  return <ItemVisual {...props} adapter={adapter} />;
+}
+
+// one item (segment template / component) drawn per version, with the change highlight and the widget side panel.
+// adapter: { noun, copyOf(i) -> {app, name} | null, filesOf(i) -> Map(id -> File), indexOf(i) -> preview index,
+//            refs(i, id, uses) -> reference groups, usesOf(i) -> usage entries, usageReady }
+export function ItemVisual({ adapter: A, r, labels, excludeKeys }) {
   const [width, setWidth] = useState(1024);
   const [showHidden, setShowHidden] = useState(false);
   const [hl, setHl] = useState(false);
@@ -38,9 +56,9 @@ export function SegmentVisual({ r, picked, labels, usage, excludeKeys }) {
   useEffect(() => {
     let alive = true;
     setWs(null);
-    (async () => { const out = []; for (let i = 0; i < labels.length; i++) { const m = picked[i] && picked[i].segs && picked[i].segs.get(r.key); out.push(m ? await readWidgetJson(m) : null); } if (alive) setWs(out); })();
+    (async () => { const out = []; for (let i = 0; i < labels.length; i++) { const m = A.filesOf(i); out.push(m ? await readWidgetJson(m) : null); } if (alive) setWs(out); })();
     return () => { alive = false; };
-  }, [r.key, picked, labels.length]);
+  }, [r.key, A, labels.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pairs = PAIRS.filter(([a, b]) => b < labels.length);
   const [a, b] = pairs[Math.min(pairIdx, pairs.length - 1)];
@@ -81,7 +99,7 @@ export function SegmentVisual({ r, picked, labels, usage, excludeKeys }) {
       <div className="sv-left">
       <div className={"sv-panes n" + panes.length}>
         {panes.map((i) => (
-          <Pane key={i} i={i} label={labels[i]} r={r} p={picked[i]} W={Ws && Ws[i]} loading={!Ws} width={width} showHidden={showHidden}
+          <Pane key={i} i={i} label={labels[i]} r={r} A={A} W={Ws && Ws[i]} loading={!Ws} width={width} showHidden={showHidden}
             marks={marksFor(i)} focus={focus} selId={sel && sel.id} onHidden={(s) => setHidden((h) => ({ ...h, [i]: s }))} onPick={(id) => { setFocus({ id, t: Date.now() }); setSel({ id, i }); }} />
         ))}
       </div>
@@ -98,7 +116,7 @@ export function SegmentVisual({ r, picked, labels, usage, excludeKeys }) {
                 {n.status === "moved" && <span className="tag">{n.oldParent} → {n.newParent}</span>}
                 {n.reorder && <span className="tag">⇅ child order changed</span>}
                 {n.props.length > 0 && <span className="sv-props">{n.props.slice(0, 3).map((p) => `${p.path}${p.embedded ? "" : `: ${short(p.old)} → ${short(p.new)}`}`).join(" · ")}{n.props.length > 3 ? ` · +${n.props.length - 3} more` : ""}</span>}
-                {n.wType === "Form" && <span className="tag">the template's own settings</span>}
+                {n.wType === "Form" && <span className="tag">the {A.noun}'s own settings</span>}
                 {isHidden && !showHidden && <span className="pill b2" title="hidden in the design">hidden — tick “Show hidden parts”</span>}
               </div>
             );
@@ -106,20 +124,20 @@ export function SegmentVisual({ r, picked, labels, usage, excludeKeys }) {
         </div>
       )}
       </div>
-      {sel && <WidgetPanel key={sel.id} sel={sel} r={r} picked={picked} labels={labels} Ws={Ws} usage={usage} diff={diff} pair={[a, b]} onClose={() => setSel(null)} />}
+      {sel && <WidgetPanel key={sel.id} sel={sel} r={r} A={A} labels={labels} Ws={Ws} diff={diff} pair={[a, b]} onClose={() => setSel(null)} />}
       </div>
     </div>
   );
 }
 const short = (v) => { if (v === undefined) return "∅"; const s = typeof v === "string" ? v : JSON.stringify(v); return s.length > 28 ? s.slice(0, 27) + "…" : s; };
 
-function Pane({ i, label, r, p, W, loading, width, showHidden, marks, focus, selId, onHidden, onPick }) {
+function Pane({ i, label, r, A, W, loading, width, showHidden, marks, focus, selId, onHidden, onPick }) {
   const frame = useRef(null), box = useRef(null), res = useRef(null);
   const [h, setH] = useState(80);
   const [state, setState] = useState("drawing");
   const [boxW, setBoxW] = useState(600);
   const [rev, setRev] = useState(0);
-  const copy = r.copies[i];
+  const copy = A.copyOf(i);
   useEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -134,7 +152,7 @@ function Pane({ i, label, r, p, W, loading, width, showHidden, marks, focus, sel
     setState("drawing");
     (async () => {
       try {
-        const idx = templateIndex(p, r.key);
+        const idx = A.indexOf(i);
         const doc = frame.current.contentDocument;
         const out = await renderTemplate(idx, new Map(Object.entries(W)), doc, { width, showHidden, extraCss: HL_CSS });
         if (!alive) return;
@@ -150,7 +168,7 @@ function Pane({ i, label, r, p, W, loading, width, showHidden, marks, focus, sel
     })();
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [W, width, showHidden, r.key, p]);
+  }, [W, width, showHidden, r.key, A]);
   // highlights
   useEffect(() => {
     const out = res.current;
@@ -196,13 +214,13 @@ function Pane({ i, label, r, p, W, loading, width, showHidden, marks, focus, sel
       <div className="sv-ph"><b>{label}</b>{copy ? <span className="tag mono">{copy.app ? copy.app + " · " : ""}{copy.name}</span> : <span className="tag">not in {label}</span>}
         {copy && state === "ok" && <span className="tag">{Math.round(scale * 100)}% · {h}px tall</span>}</div>
       <div className="sv-box" ref={box}>
-        {!copy ? <div className="sv-none">This template is not in {label}.</div> : (
+        {!copy ? <div className="sv-none">This {A.noun} is not in {label}.</div> : (
           <>
-            {(loading || state === "drawing") && <div className="sv-load">{loading ? "Reading the template…" : `Drawing ${label} with its skins…`}</div>}
+            {(loading || state === "drawing") && <div className="sv-load">{loading ? `Reading the ${A.noun}…` : `Drawing ${label} with its skins…`}</div>}
             {state.startsWith("error") && <div className="sv-none">Could not draw: {state.slice(6)}</div>}
-            {state === "empty" && <div className="sv-none">The template has no widget to draw.</div>}
+            {state === "empty" && <div className="sv-none">The {A.noun} has no widget to draw.</div>}
             <div className="sv-frame" style={{ width: width * scale, height: h * scale }}>
-              <iframe ref={frame} title={`${label} template`} className="sv-iframe" style={{ width, height: h, transform: `scale(${scale})` }} />
+              <iframe ref={frame} title={`${label} ${A.noun}`} className="sv-iframe" style={{ width, height: h, transform: `scale(${scale})` }} />
             </div>
           </>
         )}
@@ -212,7 +230,7 @@ function Pane({ i, label, r, p, W, loading, width, showHidden, marks, focus, sel
 }
 
 /* ---------------------------------------------------------------- side panel: one widget, its properties and its code */
-const KIND_LABEL = { template: "Template controller", form: "Form", component: "Component", module: "Presentation / business code" };
+const KIND_LABEL = { template: "Segment template", form: "Form", component: "Component", module: "Presentation / business code" };
 const val = (v) => { if (v == null) return null; if (typeof v === "object") return v.value === "" || v.value == null ? null : String(v.value); return String(v); };
 const PROPS = [
   ["Type", (j) => j.wType],
@@ -227,25 +245,25 @@ const PROPS = [
 function chainOf(W, id) { const out = []; let cur = W && W[id]; let g = 0; while (cur && g++ < 40) { out.unshift(cur.id); cur = cur.parent ? W[cur.parent] : null; } return out; }
 const escRe = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-function WidgetPanel({ sel, r, picked, labels, Ws, usage, diff, pair, onClose }) {
+function WidgetPanel({ sel, r, A: ad, labels, Ws, diff, pair, onClose }) {
   const id = sel.id;
   const has = labels.map((_, i) => !!(Ws && Ws[i] && Ws[i][id]));
   const [vi, setVi] = useState(has[sel.i] ? sel.i : Math.max(0, has.indexOf(true)));
   const [refs, setRefs] = useState(null);
   const [open, setOpen] = useState(() => new Set());
   const [raw, setRaw] = useState(false);
-  const uses = usage && usage[vi] ? usage[vi].get(r.key) : null;
-  // the code that names this widget, in the version shown (again once the forms using the template are known)
+  const uses = ad.usesOf(vi);
+  // the code that names this widget, in the version shown (again once the forms using the item are known)
   useEffect(() => {
     let alive = true;
     setRefs(null);
     if (!has[vi]) { setRefs([]); return undefined; }
-    widgetRefs(picked[vi], r.key, id, uses).then((x) => alive && setRefs(x));
+    ad.refs(vi, id, uses).then((x) => alive && setRefs(x));
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [vi, id, r.key, uses]);
   const j = Ws && Ws[vi] && Ws[vi][id];
-  const idx = templateIndex(picked[vi], r.key);
+  const idx = ad.indexOf(vi);
   const A = idx && idx.previewAssets;
   const node = diff && diff.nodes.get(id);
   const total = refs ? refs.reduce((n, g) => n + g.hits.length, 0) : 0;
@@ -277,7 +295,7 @@ function WidgetPanel({ sel, r, picked, labels, Ws, usage, diff, pair, onClose })
         </div>
       )}
       <div className="sv-psec">References in {labels[vi]} code {refs && <span className="tag">· {total} line{total === 1 ? "" : "s"}</span>}</div>
-      {!usage && <p className="note">Still finding the forms that use this template — only its own controller is searched until then.</p>}
+      {!ad.usageReady && <p className="note">Still finding the forms that use this {ad.noun} — only its own code is searched until then.</p>}
       {!refs ? <p className="note">Searching…</p> : !refs.length ? <p className="note">No controller, form or component in {labels[vi]} names <span className="mono">{id}</span>{has[vi] ? "" : " (it is not in this version)"}.</p> : refs.map((g, gi) => (
         <div key={gi} className="sv-rg">
           <div className="sv-rh"><span className={"sv-rk k-" + g.kind}>{KIND_LABEL[g.kind]}</span><b className="mono">{g.label}</b>{g.app && <span className="sg-apptag">{g.app}</span>}<span className="tag">{g.sub}</span></div>
