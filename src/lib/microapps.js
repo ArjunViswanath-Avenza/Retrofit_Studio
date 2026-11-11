@@ -15,8 +15,9 @@
 //                most similar text
 //   mvc          presentation / business controllers -> the R26 controller file with the most similar set of
 //                member (method) names, preferring the UIModules the module's forms moved to
-//   user widgets same class name (last namespace segment); several -> most similar widget-id set
+//   user widgets root widget kuid, else same class name (last namespace segment); several -> most similar widget-id set
 // Tablet / watch monolith forms have no R26 counterpart (R26 micro apps carry desktop + mobile forms only).
+import { pool } from "./jobs.js";
 
 export const CHANNELS = {
   web: { label: "Web (Online Banking)", mono: ["desktop"], r26: ["desktop"], family: /\.InfinityOLB\./ },
@@ -97,9 +98,88 @@ export function channelScan(scan, channels) {
 const parseFormKey = (k) => { const s = k.split("/"); return { ch: s[0], module: s.slice(1, -1).join("/"), name: s[s.length - 1].replace(/\.sm$/i, "") }; };
 const parseCtrlKey = (k) => { const s = k.split("/"); return { ch: s[0], module: s.length > 3 ? s.slice(1, -2).join("/") : "", name: s[s.length - 1].replace(/\.js$/i, "") }; };
 
+// ---------------------------------------------------------------- user widgets: identity
+// the root widget of a component is the only child of its userwidgetmodel wrapper; its kuid is what a form's
+// UserWidgetInstance names in "sourceUserWidget", and it survives R26's renames
+export async function rootKuid(files) {
+  if (!files) return null;
+  const read = async (f) => { try { return JSON.parse((await textOf(f)).replace(/^﻿/, "")); } catch { return null; } };
+  const wrap = files.get("userwidgetmodel.sm/userwidgetmodel.json");
+  const w = wrap ? await read(wrap) : null;
+  const id = w && Array.isArray(w.children) ? w.children[0] : null;
+  const f = id ? files.get(`userwidgetmodel.sm/${id}.json`) : null;
+  const root = f ? await read(f) : null;
+  return (root && root.kuid) || null;
+}
+export const compWidgetIds = (files) => new Set(files ? [...files.keys()].filter((r) => r.startsWith("userwidgetmodel.sm/")) : []);
+const sharedMA = (app) => /^(Resources\w*|Commons)MA$/.test(app);
+// every R26 copy of the channel's family: { app, key, name, files, ids, kuid }
+function compCatalog(apps, C) {
+  const list = [];
+  for (const a of apps) for (const [k, files] of a.scan.comps) {
+    if (/\.Infinity(OLB|MB)\./.test(k) && !C.family.test(k)) continue; // the other channel's widgets
+    list.push({ app: a.name, key: k, name: k.split(".").pop(), files, ids: compWidgetIds(files), kuid: null });
+  }
+  list.byLoc = new Map(list.map((c) => [`${c.app}/${c.key}`, c]));
+  return list;
+}
+const copyRef = (c) => ({ app: c.app, key: c.key, name: c.name, score: c.score, kuid: c.kuid || null });
+// best first: widget overlap, then a shared micro app (Resources / Commons), then name
+const scoreCopies = (ids, list) => list.map((c) => ({ ...c, score: jaccard(ids, c.ids) }))
+  .sort((x, y) => y.score - x.score || (sharedMA(y.app) ? 1 : 0) - (sharedMA(x.app) ? 1 : 0) || x.app.localeCompare(y.app)).map(copyRef);
+const CONFIDENCE = { kuid: "proven", manual: "set by you", "manual-none": "set by you", name: "likely", "name-weak": "weak", suggested: "suggested", none: "none" };
+const AUTO_FIELDS = ["status", "link", "method", "copies", "suggestions", "suggest"];
+const autoOf = (row) => Object.fromEntries(AUTO_FIELDS.map((f) => [f, row[f]]));
+// a manual link on top of the automatic match: {app, key} -> that copy (and the copies sharing its root kuid),
+// "none" -> no R26 counterpart, null -> back to the automatic match
+function applyLink(row, link, catalog) {
+  Object.assign(row, row.auto);
+  row.manual = null;
+  if (link == null) return;
+  if (link === "none") { Object.assign(row, { status: "none", link: "manual-none", method: "set by you: no R26 counterpart", copies: [] }); row.manual = "none"; return; }
+  const c = catalog.byLoc.get(`${link.app}/${link.key}`);
+  if (!c) { row.linkMissing = link; return; } // the linked copy is not in this R26 folder any more: automatic match kept
+  const siblings = c.kuid ? catalog.filter((x) => x !== c && x.kuid === c.kuid) : [];
+  const mine = scoreCopies(row.monoIds || new Set(), [c, ...siblings]);
+  const first = mine.findIndex((x) => x.app === c.app && x.key === c.key);
+  const copies = [mine[first], ...mine.filter((_, i) => i !== first)];
+  Object.assign(row, { status: "mapped", link: "manual", method: `set by you${c.name !== row.name ? ` · named ${c.name} in R26` : ""}${copies.length > 1 ? ` · ${copies.length} copies share its root kuid` : ""}`, copies });
+  row.manual = { app: c.app, key: c.key };
+}
+function finishCompRow(row) {
+  const best = row.copies[0];
+  row.target = best ? { app: best.app, module: best.key, key: best.key } : null;
+  row.alts = row.copies.slice(1).map((c) => `${c.key} (${Math.round((c.score || 0) * 100)}%)`);
+  row.confidence = CONFIDENCE[row.link] || "none";
+}
+// the aligned R26 maps for one component row
+function publishComp(out, row) {
+  const best = row.copies[0];
+  const c = best && out.compCatalog.byLoc.get(`${best.app}/${best.key}`);
+  if (c) { out.comps.set(row.key, c.files); out.compApp.set(row.key, c.app); } else { out.comps.delete(row.key); out.compApp.delete(row.key); }
+  for (const [q, k] of [...out.compAlias]) if (k === row.key) out.compAlias.delete(q);
+  for (const x of row.copies) if (x.kuid) out.compAlias.set(x.kuid, row.key);
+  if (row.kuid && c) out.compAlias.set(row.kuid, row.key);
+}
+// a manual link set after the map was built: a new aligned result (the R26 maps and the report row replaced)
+export function relinkComponent(aligned, key, link) {
+  const r26 = aligned.picked[2];
+  const next = { ...r26, comps: new Map(r26.comps), compApp: new Map(r26.compApp), compAlias: new Map(r26.compAlias) };
+  const comps = aligned.report.comps.map((r) => {
+    if (r.key !== key) return r;
+    const row = { ...r, linkMissing: undefined };
+    applyLink(row, link, r26.compCatalog);
+    finishCompRow(row);
+    publishComp(next, row);
+    return row;
+  });
+  return { ...aligned, picked: [aligned.picked[0], aligned.picked[1], next], report: { ...aligned.report, comps } };
+}
+
 // ---------------------------------------------------------------- alignment
 // mono: [R21 scan, KBZ scan] (already channel-filtered); ma: scanMicroApps result; channel: "web" | "mobile"
-export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
+// links: manual user-widget links, { monolith key: {app, key} | "none" }
+export async function alignMicroApps(mono, ma, channel, onProgress = () => {}, links = null) {
   const C = CHANNELS[channel];
   const apps = [...ma.apps.values()];
   const report = { channel, forms: [], controllers: [], mvc: [], comps: [], segs: [], affinity: {} };
@@ -264,40 +344,64 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}) {
   for (const c of r26Mvc) if (!claimed.mvc.has(loc(c.app, c.key))) out.mvc.set(`[${c.app}] ${c.key}`, c.f);
 
   // ---- user widgets
+  // Rules, first that applies wins (measured on KBZ R21 → R26: the root widget's kuid survives renames and is never
+  // shared by two monolith components; 207 of 211 web kuid matches also share at least half their widgets):
+  //   kuid       an R26 copy whose root widget has the monolith component's root kuid      -> proven
+  //   name       same class name (several copies -> most similar widget-id set)           -> likely, weak below 30%
+  //   suggested  no kuid / name match: the copies sharing >= 60% of the widget ids, shown as a suggestion only (generic
+  //              small components match wrongly) — nothing is compared until someone links one
+  // A manual link (links[key] = {app, key} | "none") replaces the automatic result; row.auto keeps the automatic one.
+  // Every copy of a match is listed on its row (and claimed, so it is not listed again as an R26-only component).
   onProgress({ step: "Matching user widgets", running: true });
-  const r26Comps = new Map(); // class name -> [{app, key, files}]
-  for (const a of apps) for (const [k, files] of a.scan.comps) {
-    const n = k.split(".").pop();
-    if (!r26Comps.has(n)) r26Comps.set(n, []);
-    r26Comps.get(n).push({ app: a.name, key: k, files });
-  }
-  const widgetIds = (files) => new Set([...files.keys()].filter((r) => r.startsWith("userwidgetmodel.sm/")));
+  const catalog = compCatalog(apps, C);
+  await pool(catalog.length, 16, async (i) => { catalog[i].kuid = await rootKuid(catalog[i].files); });
   const monoCompKeys = [...new Set(mono.flatMap((s) => (s ? [...s.comps.keys()] : [])))].sort();
+  const monoKuid = new Map();
+  await pool(monoCompKeys.length, 16, async (i) => {
+    const k = monoCompKeys[i];
+    const q = (mono[1] && (await rootKuid(mono[1].comps.get(k)))) || (mono[0] && (await rootKuid(mono[0].comps.get(k))));
+    if (q) monoKuid.set(k, q);
+  });
+  const byName = new Map(), byKuid = new Map();
+  for (const c of catalog) {
+    if (!byName.has(c.name)) byName.set(c.name, []);
+    byName.get(c.name).push(c);
+    if (c.kuid) { if (!byKuid.has(c.kuid)) byKuid.set(c.kuid, []); byKuid.get(c.kuid).push(c); }
+  }
+  out.compCatalog = catalog;
+  out.compAlias = new Map(); // root kuid of every listed copy -> the monolith key it stands for (where it is used)
   for (const k of monoCompKeys) {
     const n = k.split(".").pop();
-    const row = { key: k, name: n, module: k.split(".").slice(0, -1).join("."), present: inSide("comps", k), status: "none", method: "", target: null, alts: [] };
-    let cands = r26Comps.get(n) || [];
-    const fam = cands.filter((c) => !/\.Infinity(OLB|MB)\./.test(c.key) || C.family.test(c.key));
-    if (fam.length) cands = fam;
-    if (cands.length === 1) Object.assign(row, { status: "mapped", method: "unique class name", target: cands[0], copies: [{ app: cands[0].app, key: cands[0].key, score: null }] });
-    else if (cands.length > 1) {
-      const ids = widgetIds(ref("comps", k));
-      const shared = (c) => (/^(Resources\w*|Commons)MA$/.test(c.app) ? 1 : 0);
-      const scored = cands.map((c) => ({ ...c, score: jaccard(ids, widgetIds(c.files)) })).sort((x, y) => y.score - x.score || shared(y) - shared(x));
-      const identical = scored[0].score >= 0.95 && scored[1].score >= 0.95;
-      const clear = identical || scored[0].score - scored[1].score >= 0.05;
-      Object.assign(row, { status: clear ? "mapped" : "ambiguous", method: `${cands.length} candidates — widget overlap ${Math.round(scored[0].score * 100)}%${identical ? " (same structure in several micro apps)" : ""}`, target: scored[0], alts: scored.slice(1).map((c) => `${c.key} (${Math.round(c.score * 100)}%)`) });
-      // every copy, best first (the Move-to-R26 popup can write any of them)
-      row.copies = scored.map((c) => ({ app: c.app, key: c.key, score: c.score }));
+    const ids = compWidgetIds(ref("comps", k));
+    const row = { key: k, name: n, module: k.split(".").slice(0, -1).join("."), present: inSide("comps", k), kuid: monoKuid.get(k) || null, widgets: ids.size, monoIds: ids, status: "none", method: "", target: null, alts: [], copies: [] };
+    const scored = (list) => scoreCopies(ids, list);
+    const viaKuid = row.kuid ? byKuid.get(row.kuid) || [] : [];
+    const viaName = byName.get(n) || [];
+    if (viaKuid.length) {
+      const sc = scored(viaKuid);
+      const renamed = sc[0].name !== n;
+      Object.assign(row, { status: "mapped", link: "kuid", method: `root widget kuid${renamed ? ` · renamed to ${sc[0].name}` : ""}${sc.length > 1 ? ` · ${sc.length} copies` : ""} · widget overlap ${pct(sc[0].score)}`, copies: sc });
+    } else if (viaName.length) {
+      const sc = scored(viaName);
+      const identical = sc.length > 1 && sc[0].score >= 0.95 && sc[1].score >= 0.95;
+      const clear = sc.length === 1 || identical || sc[0].score - sc[1].score >= 0.05;
+      Object.assign(row, { status: clear ? "mapped" : "ambiguous", link: sc[0].score >= 0.3 ? "name" : "name-weak", method: `same class name, no kuid match${sc.length > 1 ? ` · ${sc.length} copies` : ""} · widget overlap ${pct(sc[0].score)}${identical ? " (same structure in several micro apps)" : ""}`, copies: sc });
+    } else {
+      const sc = ids.size ? scored(catalog.filter((c) => c.ids.size)).filter((c) => c.score >= 0.6).slice(0, 3) : [];
+      Object.assign(row, { link: sc.length ? "suggested" : "none", suggestions: sc.map(copyRef), method: sc.length ? `no kuid or name match · ${sc[0].name} in ${sc[0].app} shares ${pct(sc[0].score)} of the widgets — link it if it is the same component` : `no copy with its root kuid, its class name or ≥ 60% of its widgets in any micro app` });
+      if (sc.length) row.suggest = `${sc[0].app}:${sc[0].key}`;
     }
-    if (row.target) { out.comps.set(k, row.target.files); out.compApp.set(k, row.target.app); claimed.comps.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.key, key: row.target.key }; }
+    row.auto = autoOf(row);
+    if (links && links[k] !== undefined) applyLink(row, links[k], catalog);
+    finishCompRow(row);
+    publishComp(out, row);
+    for (const c of row.copies) claimed.comps.add(loc(c.app, c.key));
     report.comps.push(row);
   }
-  for (const a of apps) for (const [k, files] of a.scan.comps) {
-    if (claimed.comps.has(loc(a.name, k))) continue;
-    if (/\.Infinity(OLB|MB)\./.test(k) && !C.family.test(k)) continue; // other channel's widgets
-    out.comps.set(k, files);
-    out.compApp.set(k, a.name);
+  for (const c of catalog) {
+    if (claimed.comps.has(loc(c.app, c.key))) continue;
+    out.comps.set(c.key, c.files);
+    out.compApp.set(c.key, c.app);
   }
 
   // ---- segment templates

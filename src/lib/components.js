@@ -9,6 +9,7 @@
 // Every aspect except structure is reduced to the {members} shape so buildModel/classify apply unchanged.
 import { extract, extractComponent, buildModel } from "./analyzer.js";
 import { buildFormDiff } from "./forms.js";
+import { mergeRows, DESIGN_KEYS } from "./segmerge.js";
 import { yieldNow, pool, bgTurn } from "./jobs.js";
 
 // "<root>/userwidgets/<component>/<rel>" -> { key: component folder, rel }
@@ -144,6 +145,100 @@ export function partsOf(key, files) {
   return p;
 }
 
+// ---------------------------------------------------------------- actions kept as studioactions JSON
+// Visualizer keeps every action sequence as studioactions/<common|desktop|mobile>/AS_<id>.json; the ControllerActions.js
+// files are generated from them, and R26 micro apps often ship without the generated file. A widget event (ide_onClick
+// …) names its action; an action the Actions file lacks is read from its JSON and rendered the way Visualizer
+// generates it, so it compares like for like: a code snippet as written, a controller function call as
+// "return self.<fn>.call(this);". Other step types and nested steps are not rendered (the member is marked approximate).
+const saIndex = new WeakMap();
+export function studioActionsOf(p, app) {
+  if (!p) return null;
+  const list = app && p.appFiles ? p.appFiles.get(app) : p.all;
+  if (!list) return null;
+  if (!saIndex.has(list)) {
+    const m = new Map();
+    for (const f of list) { const x = (f.webkitRelativePath || f.name || "").replace(/\\/g, "/").match(/\/studioactions\/[^/]+\/(AS_\w+)\.json$/); if (x) m.set(x[1], f); }
+    saIndex.set(list, m);
+  }
+  return saIndex.get(list);
+}
+export function renderStudioAction(id, a) {
+  const params = ((a && a.params) || []).map((p) => p && p.name).filter(Boolean);
+  let exact = true;
+  const body = [];
+  for (const s of (a && a.actions) || []) {
+    if (s.parentId) { exact = false; continue; }
+    if (s.type === "ADD_SNIPPET") body.push(s.codeSnippet || "");
+    else if (s.type === "INVOKE_FUNCTION" && (s.source || "controller") === "controller" && !(s.inputparams || []).length && (s.sequenceKUID || s.display)) body.push(`return self.${s.sequenceKUID || s.display}.call(this);`);
+    else { exact = false; body.push(`/* ${s.type} step — not rendered from the JSON */`); }
+  }
+  return { text: `function ${id}(${(params.length ? params : ["eventobject"]).join(", ")}) {\nvar self = this;\n${body.join("\n")}\n}`, exact };
+}
+// widget events of one component version: AS id -> "onClick defined for btnX"
+function eventsOf(W) {
+  const m = new Map();
+  for (const [wid, w] of Object.entries(W)) for (const [k, v] of Object.entries(w || {})) if (/^ide_/.test(k) && typeof v === "string" && /^AS_\w+$/.test(v) && !m.has(v)) m.set(v, `${k.slice(4)} defined for ${wid}`);
+  return m;
+}
+
+// ---------------------------------------------------------------- triage and kind of customisation
+// what KBZ's widget changes on one component, with design-time settings and excluded parameters left out
+function widgetKeys(r, excl) {
+  const out = new Set();
+  for (const ks of (r.wkeys && r.wkeys["01"]) || []) for (const k of ks) if (!DESIGN_KEYS.has(k) && !(excl && excl.has(k))) out.add(k);
+  return out;
+}
+const CODE_ASPECTS = ["controller", "actions", "contract", "deps", "scripts"];
+const codeChanges = (r) => CODE_ASPECTS.reduce((t, k) => t + (r.changes[k] || 0), 0);
+// the Move-to-R26 rows against the compared copy, by state (design-time and excluded parameters left out)
+export function mergeCounts(r, excl) {
+  const n = { clean: 0, already: 0, conflict: 0, removal: 0, design: 0 };
+  const asParam = { "(parent)": "parent", "(order)": "children" }; // the Exclude bar names these by their JSON key
+  for (const [key, st] of Object.entries((r.merge && r.merge.byKey) || {})) {
+    if (excl && excl.has(asParam[key] || key)) continue;
+    for (const [s, c] of Object.entries(st)) n[s] = (n[s] || 0) + c;
+  }
+  return n;
+}
+// kind of customisation (KBZ vs R21): skin only · restyle · structure · code only · look + code · structure + code
+export function kindOf(r, excl) {
+  if (r.status !== "customised") return null;
+  const s = r.structure["01"] || {};
+  const struct = (s.added || 0) + (s.removed || 0) + (s.moved || 0) + (s.reordered || 0);
+  const keys = [...widgetKeys(r, excl)];
+  const code = codeChanges(r);
+  if (!struct && !keys.length) return code ? "code only" : "design-time only";
+  const skinOnly = keys.length && keys.every((k) => /skin/i.test(k));
+  if (!code) return struct ? "structure" : skinOnly ? "skin only" : "restyle";
+  return struct ? "structure + code" : "look + code";
+}
+export const TRIAGE = [
+  ["nothing", "Nothing to do", "KBZ did not change it"],
+  ["noise", "Design-time noise", "only Visualizer canvas settings changed"],
+  ["quick", "Quick", "widget changes only, none conflicts with R26"],
+  ["decide", "Conflicts to decide", "widget changes only, some conflict with R26"],
+  ["code", "Code, no conflict", "code or contract changed too, nothing conflicts"],
+  ["retrofit", "Real retrofit", "code changed and something conflicts"],
+  ["nocopy", "Changed, no R26 copy", "KBZ changed it; R26 has no counterpart"],
+  ["new", "New in KBZ", "port the whole component"],
+  ["removed", "Removed in KBZ", "KBZ dropped it"],
+  ["r26only", "Only in R26", "new R26 product, not retrofit work"],
+];
+export function triageOf(r, labels, excl) {
+  const N = labels[2];
+  if (r.status === "unchanged") return "nothing";
+  if (r.status === "new") return "new";
+  if (r.status === "removed") return "removed";
+  if (r.status === "absent") return "r26only";
+  if (N && !r.present[N]) return "nocopy";
+  const code = codeChanges(r);
+  if (!code && kindOf(r, excl) === "design-time only") return "noise";
+  const widgetConf = mergeCounts(r, excl).conflict;
+  if (!code) return widgetConf ? "decide" : "quick";
+  return r.conflicts || widgetConf ? "retrofit" : "code";
+}
+
 export const ASPECTS = [
   ["controller", "Controller"],
   ["actions", "Actions"],
@@ -153,11 +248,39 @@ export const ASPECTS = [
 ];
 const STRUCT_PAIRS = [[0, 1], [0, 2], [1, 2]];
 
+// one version's actions: the Actions file's functions, plus every action a widget event names that the file lacks,
+// read from studioactions (see above). Returns { src, parsed, fromJson: [names], approx: [names] } or null.
+async function actionsVersion(file, events, idx) {
+  const src = file ? norm(await file.text()) : "";
+  const parsed = src ? extract(src) : { moduleName: null, members: {} };
+  const fromJson = [], approx = [];
+  let extra = "";
+  for (const ev of events.keys()) {
+    if (ev in parsed.members || !idx || !idx.get(ev)) continue;
+    try {
+      const j = JSON.parse((await idx.get(ev).text()).replace(/^﻿/, ""));
+      const { text, exact } = renderStudioAction(ev, j[ev] || Object.values(j)[0]);
+      const one = extract(`define({\n${ev}: ${text}\n});`).members[ev];
+      if (!one) continue;
+      parsed.members[ev] = one;
+      fromJson.push(ev);
+      if (!exact) approx.push(ev);
+      extra += `\n${ev}: ${text}`;
+    } catch { /* unreadable action JSON: left out */ }
+  }
+  if (!file && !fromJson.length) return null;
+  return { src: src + extra, parsed, fromJson, approx };
+}
+
 // Analyse every component across the loaded versions. maps[i]: Map(componentKey -> Map(rel -> File)) or null.
-export async function analyzeComponents(maps, labels, onProgress) {
+// opts.picked: the versions' scans (studioactions are read from them; R26 from the micro app holding the copy);
+// opts.keys: analyse only these components (a re-link)
+export async function analyzeComponents(maps, labels, onProgress, opts = {}) {
   const n = maps[2] ? 3 : 2;
   const L = labels.slice(0, n);
-  const keys = [...new Set(maps.slice(0, n).flatMap((m) => (m ? [...m.keys()] : [])))].sort((a, b) => compName(a).localeCompare(compName(b)) || a.localeCompare(b));
+  const keys = opts.keys || [...new Set(maps.slice(0, n).flatMap((m) => (m ? [...m.keys()] : [])))].sort((a, b) => compName(a).localeCompare(compName(b)) || a.localeCompare(b));
+  const picked = opts.picked || [];
+  const appOf = (i, key) => (picked[i] && picked[i].compApp ? picked[i].compApp.get(key) || "" : "");
   const results = new Array(keys.length);
   let done = 0;
   onProgress({ done: 0, total: keys.length, running: true });
@@ -169,19 +292,40 @@ export async function analyzeComponents(maps, labels, onProgress) {
     const run = async (name, files, parse) => {
       try { r.models[name] = await aspect(L, files, parse); } catch (e) { r.models[name] = null; r.errors[name] = String(e.message || e); }
     };
+    let W = parts.map(() => ({}));
+    try { W = []; for (const p of parts) W.push(p ? await readWidgetJson(p.structure) : {}); } catch (e) { r.errors.structure = String(e.message || e); }
     await run("controller", parts.map((p) => p && p.controller), extractComponent);
-    await run("actions", parts.map((p) => p && p.actions), extract);
-    if (r.models.actions) {
-      const hints = {};
-      for (const p of parts) if (p && p.actions) Object.assign(hints, actionLabels(await p.actions.text()));
-      r.models.actions.hints = hints;
-    }
+    try {
+      const events = W.map(eventsOf);
+      const vers = [];
+      for (let i = 0; i < n; i++) vers.push(parts[i] ? await actionsVersion(parts[i].actions, events[i], studioActionsOf(picked[i], appOf(i, key))) : null);
+      if (vers.some(Boolean)) {
+        const m = buildModel(L.map((label, i) => ({ label, name: "", src: vers[i] ? vers[i].src : "", parsed: vers[i] ? vers[i].parsed : EMPTY })));
+        const hints = {};
+        for (const p of parts) if (p && p.actions) Object.assign(hints, actionLabels(await p.actions.text()));
+        for (const ev of events) for (const [id, h] of ev) if (!hints[id]) hints[id] = h;
+        m.hints = hints;
+        m.fromJson = Object.fromEntries(L.map((l, i) => [l, vers[i] ? vers[i].fromJson : []]).filter(([, x]) => x.length));
+        m.approx = [...new Set(vers.flatMap((v) => (v ? v.approx : [])))];
+        m.noFile = L.filter((l, i) => parts[i] && !parts[i].actions);
+        r.models.actions = m;
+      } else r.models.actions = null;
+    } catch (e) { r.models.actions = null; r.errors.actions = String(e.message || e); }
     await run("contract", parts.map((p) => p && p.contract), parseContract);
     await run("deps", parts.map((p) => p && p.deps), parseDeps);
     await run("scripts", parts.map((p) => (p ? p.scripts : null)), extractComponent);
     try {
-      const W = [];
-      for (const p of parts) W.push(p ? await readWidgetJson(p.structure) : {});
+      if (r.errors.structure) throw new Error(r.errors.structure);
+      // the Move-to-R26 rows against the compared copy, counted per parameter (triage; recounted without excluded ones)
+      if (n === 3 && parts[0] && parts[1] && parts[2]) {
+        const byKey = {};
+        for (const row of mergeRows(W[0], W[1], W[2])) {
+          const k = row.kind === "prop" ? row.key : `(${row.kind})`;
+          const s = row.design ? "design" : row.state;
+          (byKey[k] = byKey[k] || {})[s] = (byKey[k][s] || 0) + 1;
+        }
+        r.merge = { byKey };
+      }
       for (const [a, b] of STRUCT_PAIRS) {
         if (b >= n || (!parts[a] && !parts[b])) continue;
         const d = buildFormDiff(W[a], W[b]);
@@ -231,17 +375,24 @@ export async function componentUsage(picked, onProgress, signal) {
   let done = 0;
   for (const p of picked) {
     if (!p || !p.comps) { all.push(null); continue; }
-    // kuid of every component's root widget
-    const byKuid = new Map();
+    // kuid of every component's root widget; in R26 also every copy listed for a component (p.compAlias), so an
+    // instance placing any copy counts for that component
+    const byKuid = new Map(p.compAlias || []);
     const keys = [...p.comps.keys()];
     await pool(keys.length, 16, async (k) => {
       const parts = partsOf(keys[k], p.comps.get(keys[k]));
       if (!parts) return;
       const W = await readWidgetJson(parts.structure);
-      for (const w of Object.values(W)) if (w && w.parent === "userwidgetmodel" && w.kuid) byKuid.set(w.kuid, keys[k]);
+      for (const w of Object.values(W)) if (w && w.parent === "userwidgetmodel" && w.kuid && !byKuid.has(w.kuid)) byKuid.set(w.kuid, keys[k]);
     });
     const use = new Map();
-    const add = (kuid, e) => { const key = byKuid.get(kuid); if (!key) return; if (!use.has(key)) use.set(key, []); use.get(key).push(e); };
+    const raw = new Map(); // kuid -> every instance placing it (kept for re-links)
+    const add = (kuid, e) => {
+      if (!raw.has(kuid)) raw.set(kuid, []);
+      raw.get(kuid).push(e);
+      const key = byKuid.get(kuid); if (!key) return; if (!use.has(key)) use.set(key, []); use.get(key).push(e);
+    };
+    use.byKuid = raw;
     const scan = async (items, make) => {
       for (let i = 0; i < items.length; i += 256) {
         const part = items.slice(i, i + 256);
@@ -267,6 +418,31 @@ export async function componentUsage(picked, onProgress, signal) {
   }
   onProgress({ done: total, total, running: false });
   return all;
+}
+
+// after a re-link: version i's uses of one component, from the instances placing the given root kuids
+export function relinkUsage(usage, i, key, kuids) {
+  if (!usage || !usage[i]) return usage;
+  const m = new Map(usage[i]);
+  m.byKuid = usage[i].byKuid;
+  const list = [...new Set(kuids.filter(Boolean))].flatMap((q) => (m.byKuid && m.byKuid.get(q)) || []);
+  if (list.length) m.set(key, list); else m.delete(key);
+  return usage.map((u, k) => (k === i ? m : u));
+}
+
+// R26 uses per copy: a form places the copy in its own micro app, else the one in a shared micro app (Resources /
+// Commons) — the copy a micro-app build can reach. Returns Map("app/key" -> distinct forms · templates · components).
+export function usesPerCopy(entries, copies) {
+  const out = new Map(copies.map((c) => [`${c.app}/${c.key}`, new Set()]));
+  const shared = copies.filter((c) => /^(Resources\w*|Commons)MA$/.test(c.app));
+  let unresolved = 0;
+  for (const e of entries || []) {
+    const c = copies.find((x) => x.app === e.app) || shared[0];
+    if (c) out.get(`${c.app}/${c.key}`).add(e.kind + e.where); else unresolved++;
+  }
+  const res = new Map([...out].map(([k, s]) => [k, s.size]));
+  res.unresolved = unresolved;
+  return res;
 }
 
 // every line that names one widget of a component, in one version: the component's own scripts, then wherever it is

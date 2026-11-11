@@ -8,11 +8,11 @@ import { FormsView } from "../components/Forms";
 import { OverallView } from "../components/Overall";
 import { ComponentsView } from "../components/Components";
 import { SegmentsView } from "../components/Segments";
-import { analyzeComponents, componentUsage } from "../lib/components";
+import { analyzeComponents, componentUsage, relinkUsage } from "../lib/components";
 import { analyzeSegments, segmentUsage, segmentFiles } from "../lib/segments";
 import { scanFolder } from "../lib/scan";
 import { MicroAppUpload, MicroAppMap } from "../components/MicroApps";
-import { scanMicroApps, alignMicroApps, missingMicroApps, channelScan, CHANNELS } from "../lib/microapps";
+import { scanMicroApps, alignMicroApps, missingMicroApps, channelScan, relinkComponent, CHANNELS } from "../lib/microapps";
 import { clean } from "../lib/names";
 import { foreground, background, isStopped, yieldNow, pool } from "../lib/jobs";
 import { useProjects, derive, SlotLink } from "../app/projects";
@@ -27,6 +27,18 @@ const monoScan = (s) => (s && s.kind === "monolith" ? derive(s.files, "scan", ()
 const maScan = (s) => (s && s.kind === "microapps" ? derive(s.files, "microapps", () => scanMicroApps(s.files, scanFolder)) : null);
 // changes whenever one of these folders is loaded again
 const slotsVersion = (slots, ids) => ids.map((id) => (slots[id] ? +slots[id].loadedAt : 0)).join("|");
+// user-widget links set by hand (COMP-are · Change the R26 copy), kept in this browser per KBZ folder · R26 folder · channel
+const LINKS_KEY = "rs.compLinks";
+const readLinks = (pid) => { try { return JSON.parse(localStorage.getItem(LINKS_KEY) || "{}")[pid] || {}; } catch { return {}; } };
+const writeLink = (pid, key, link) => {
+  try {
+    const all = JSON.parse(localStorage.getItem(LINKS_KEY) || "{}");
+    const m = all[pid] || {};
+    if (link == null) delete m[key]; else m[key] = link;
+    all[pid] = m;
+    localStorage.setItem(LINKS_KEY, JSON.stringify(all));
+  } catch { /* kept for this session only */ }
+};
 
 /* ================================================================ monolith → monolith */
 export function CompareMono(props) {
@@ -86,15 +98,18 @@ export function CompareMA(props) {
   const [aligning, setAligning] = useState(null);
   useEffect(() => { setAligned(null); setAligning(null); }, [ver]);
   const ready = !!(pick[0] && pick[1] && pick[2]);
+  const pid = `${slots.custom ? slots.custom.name : ""}|${slots.target ? slots.target.name : ""}|${channel}`;
   // keep: stay on the page the address names (a reload or a bookmark) instead of the micro-app map
   const start = (keep) => foreground("Micro-app map · locate every item in its micro app", async () => {
     const C = CHANNELS[channel];
     const mono = [channelScan(pick[0], C.mono), channelScan(pick[1], C.mono)];
     const missing = await missingMicroApps(pick[2]);
-    const { r26, report } = await alignMicroApps(mono, pick[2], channel, setAligning);
+    const { r26, report } = await alignMicroApps(mono, pick[2], channel, setAligning, readLinks(pid));
     setAligned({ picked: [mono[0], mono[1], r26], report, missing, channel });
     if (keep !== true) props.setNav("home");
   });
+  // a component linked by hand to another R26 copy (or to none): saved, and applied without re-running the map
+  const relinkComp = (key, link) => { writeLink(pid, key, link); setAligned((a) => (a ? relinkComponent(a, key, link) : a)); };
   useAutoStart(props, ready && !aligned && !(aligning && aligning.running), () => start(true));
   const segReport = useMemo(() => (aligned && aligned.report.segs ? new Map(aligned.report.segs.map((r) => [r.key, r])) : null), [aligned]);
   const compReport = useMemo(() => (aligned && aligned.report.comps ? new Map(aligned.report.comps.map((r) => [r.key, r])) : null), [aligned]);
@@ -109,7 +124,7 @@ export function CompareMA(props) {
   }
   return (
     <Shell {...shellOf(props, TOOLS.ma.menu(labels), { ico: "❖", title: "Compare", sub: "Monolith → micro app" }, `${CHANNELS[aligned.channel].label} · ${aligned.picked[2].microApps} ${labels[2]} projects`)}>
-      <VisualizerWorkspace key={labels.join("|") + ver} tool="ma" picked={aligned.picked} labels={labels} segReport={segReport} compReport={compReport} {...props}
+      <VisualizerWorkspace key={labels.join("|") + ver} tool="ma" picked={aligned.picked} labels={labels} segReport={segReport} compReport={compReport} relinkComp={relinkComp} {...props}
         home={<MicroAppMap aligned={aligned} goto={props.setNav} labels={labels} />} />
     </Shell>
   );
@@ -148,7 +163,7 @@ async function analyzeSets(maps, extractor, meta, onProgress, labels) {
 const KEY_OF = { controllers: (r) => r.path, mvc: (r) => r.path, comps: (r) => r.key, segs: (r) => r.key };
 const fileName = (k) => k.split("/").pop().replace(/\.(sm|js)$/i, "");
 
-function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem, active, home, segReport, compReport }) {
+function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem, active, home, segReport, compReport, relinkComp }) {
   const [bulk, setBulk] = useState(null);
   const [analyzing, setAnalyzing] = useState(null);
   const [formScan, setFormScan] = useState({}); // per version-pair form property scan (kept across menu navigation)
@@ -214,15 +229,39 @@ function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem,
     loadSegFiles();
     loadSegUsage();
   });
+  // components re-linked by hand: their R26 uses come from the root kuids of the copies now listed
+  const relinked = useRef(new Set());
+  const reportNow = useRef(compReport);
+  reportNow.current = compReport;
+  const withRelinks = (u) => {
+    let x = u;
+    for (const k of relinked.current) { const row = reportNow.current && reportNow.current.get(k); x = relinkUsage(x, 2, k, row ? [row.kuid, ...row.copies.map((c) => c.kuid)] : []); }
+    return x;
+  };
   const loadCompUsage = () => once("compUsage", "COMP-are · find where each component is used", async (signal) => {
     setCompUsageProg({ done: 0, total: 1, running: true });
-    try { setCompUsage(await componentUsage(picked, setCompUsageProg, signal)); } catch (e) { if (!isStopped(e)) throw e; }
+    try { setCompUsage(withRelinks(await componentUsage(picked, setCompUsageProg, signal))); } catch (e) { if (!isStopped(e)) throw e; }
   });
   const runComps = () => foreground("COMP-are · compare user widgets", async () => {
-    const results = await analyzeComponents(picked.map((p) => (p ? p.comps : null)), labels, setCompAnalyzing);
+    const results = await analyzeComponents(picked.map((p) => (p ? p.comps : null)), labels, setCompAnalyzing, { picked });
     setCompBulk({ results });
     loadCompUsage();
   });
+  // a re-link replaces the R26 maps (new picked): compare that one component again against its new copy
+  const pending = useRef(new Set());
+  const relink = relinkComp ? (key, link) => { pending.current.add(key); relinked.current.add(key); relinkComp(key, link); } : null;
+  useEffect(() => {
+    if (!pending.current.size) return;
+    const keys = [...pending.current];
+    pending.current.clear();
+    setCompUsage((u) => (u ? withRelinks(u) : u));
+    if (!ran.current.has("comps")) return;
+    foreground("COMP-are · compare the re-linked component", async () => {
+      const res = await analyzeComponents(picked.map((p) => (p ? p.comps : null)), labels, () => {}, { picked, keys });
+      const by = new Map(res.map((r) => [r.key, r]));
+      setCompBulk((b) => (b ? { results: b.results.map((r) => by.get(r.key) || r) } : b));
+    });
+  }, [picked]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // run an analysis the first time its view is opened (once each, whatever re-runs the effect)
   const ran = useRef(new Set());
@@ -274,7 +313,7 @@ function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem,
         <ComponentsView picked={picked} labels={shown} bulk={compBulk} analyzing={compAnalyzing}
           drill={drillAt("comps")} setDrill={openAt("comps")}
           aspect={compAspect} setAspect={(k) => { setCompAspect(k); setMember(null); }} overall={overall} setOverall={setOverall}
-          report={compReport} usage={compUsage} usageProg={compUsageProg}
+          report={compReport} usage={compUsage} usageProg={compUsageProg} relink={relink}
           renderReport={(model) => <Report model={model} {...reportProps} widgets={false} />} />
       )}
       {nav === "controllers" && (

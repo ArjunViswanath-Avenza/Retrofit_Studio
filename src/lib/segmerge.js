@@ -13,10 +13,66 @@
 //   removal  KBZ removed a widget R26 still has -> kept unless chosen (R26 code may use it)
 // A choice is "kbz" (move KBZ's change) or "r26" (keep R26). applyMerge builds the merged widget set from R26 + the
 // "kbz" choices; writeFiles turns it into the template folder (unchanged widget files byte-for-byte as in R26).
+// Object-valued properties (responsiveData, accessibilityconfig, dataDiffs, …) are compared value by value: one row per
+// changed leaf (row.path, e.g. responsiveData › b1 › width), so KBZ and R26 changing different breakpoints of the same
+// property is not a conflict. A {type, value} pair stays one value.
+// Design-time rows (Visualizer's own canvas state: context, breakpointInfo, prevDevice, …) and widget-id (kuid) rows
+// start as "keep R26" (row.design), whatever their state — they are noise when moved, and a kuid change can break a
+// component contract's srcWgtKUID links.
 import { sameValue, commonOrder, isNoiseKey } from "./forms.js";
 
 const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 const parentOf = (w) => (w && w.parent != null ? w.parent : null);
+const isDunder = (k) => k.length > 4 && k.startsWith("__") && k.endsWith("__");
+
+export const DESIGN_KEYS = new Set(["context", "breakpointInfo", "currentBreakpoint", "prevDevice", "prevPlatform", "device", "platform", "initdone", "addWidgetsdone", "allboxes", "areflexpropsreferenced", "isdatareferenced", "snapgridsize", "snaptogrid", "canvasWidth", "iscustomlayout", "currentLocale", "containerId", "DNDConfig", "_children_", "pf", "masterType", "shellCSS", "kuid"]);
+export const isDesignKey = (k) => DESIGN_KEYS.has(k);
+
+// one row per changed leaf of an object-valued property; [{ path: [] }] = the property as a whole
+const splittable = (v) => !!v && typeof v === "object" && !Array.isArray(v) && !("value" in v) && !("type" in v);
+function leafRows(v0, v1, v2, path = [], depth = 0) {
+  const vs = [v0, v1, v2].filter((v) => v !== undefined && v !== null);
+  if (depth < 4 && vs.length && vs.every(splittable)) {
+    const out = [];
+    for (const s of new Set(vs.flatMap((v) => Object.keys(v)))) {
+      if (isDunder(s)) continue; // IDE state travels with its container
+      const a = v0 ? v0[s] : undefined, b = v1 ? v1[s] : undefined, c = v2 ? v2[s] : undefined;
+      if (sameValue(a, b)) continue;
+      out.push(...leafRows(a, b, c, [...path, s], depth + 1));
+    }
+    if (out.length) return out;
+  }
+  return [{ path, v0, v1, v2 }];
+}
+// the name a leaf row is about (responsiveData › b1 › skin -> "skin"; dataDiffs › lbl › text › Default -> "text")
+export const leafName = (r) => { const p = (r.path || []).filter((s) => s !== "Default"); return p.length ? p[p.length - 1] : r.key; };
+export const rowLabel = (r) => (r.path && r.path.length ? `${r.key} › ${r.path.join(" › ")}` : r.key);
+
+// set one leaf inside a widget property: missing containers are created (carrying KBZ's IDE-only __x__ entries);
+// a removed value drops the containers it leaves empty that KBZ does not have either
+function setLeaf(w, key, path, value, w1) {
+  const chain = [key, ...path];
+  const trail = [];
+  let cur = w, src = w1;
+  for (let i = 0; i < chain.length - 1; i++) {
+    const s = chain[i];
+    src = src && typeof src === "object" ? src[s] : undefined;
+    if (!cur[s] || typeof cur[s] !== "object" || Array.isArray(cur[s])) {
+      if (value === undefined) return;
+      cur[s] = Object.fromEntries(Object.entries(src && typeof src === "object" ? src : {}).filter(([k]) => isDunder(k)).map(([k, v]) => [k, clone(v)]));
+    }
+    trail.push([cur, s, src]);
+    cur = cur[s];
+  }
+  const last = chain[chain.length - 1];
+  if (value !== undefined) { cur[last] = clone(value); return; }
+  delete cur[last];
+  for (let i = trail.length - 1; i >= 0; i--) {
+    const [p, s, kbz] = trail[i];
+    if (Object.keys(p[s]).some((k) => !isDunder(k)) || kbz !== undefined) break;
+    delete p[s];
+  }
+}
 
 // widget ids in tree order (parents before children), following KBZ, then R26-only and R21-only widgets
 function treeOrder(...Ws) {
@@ -49,7 +105,7 @@ function changedWidget(w0, w1) {
 
 export function mergeRows(W0, W1, W2) {
   const rows = [];
-  const add = (r) => rows.push({ ...r, rid: `${r.kind}:${r.wid}${r.key ? ":" + r.key : ""}` });
+  const add = (r) => rows.push({ ...r, rid: `${r.kind}:${r.wid}${r.key ? ":" + r.key : ""}${r.path && r.path.length ? "." + r.path.join(".") : ""}` });
   for (const id of treeOrder(W1, W2, W0)) {
     const w0 = W0[id], w1 = W1[id], w2 = W2[id];
     const wType = (w1 || w2 || w0).wType || "";
@@ -73,7 +129,9 @@ export function mergeRows(W0, W1, W2) {
     }
     for (const k of propKeys(w0, w1, w2)) {
       if (sameValue(w0[k], w1[k])) continue;
-      add({ kind: "prop", wid: id, wType, key: k, base: w0[k], kbz: w1[k], r26: w2[k], state: stateOf(w0[k], w1[k], w2[k]) });
+      for (const l of leafRows(w0[k], w1[k], w2[k])) {
+        add({ kind: "prop", wid: id, wType, key: k, path: l.path, base: l.v0, kbz: l.v1, r26: l.v2, state: stateOf(l.v0, l.v1, l.v2), design: isDesignKey(k) });
+      }
     }
     if (parentOf(w0) !== parentOf(w1)) {
       const p0 = parentOf(w0), p1 = parentOf(w1), p2 = parentOf(w2);
@@ -92,7 +150,7 @@ const sameWidget = (a, b) => !changedWidget(a, b);
 const stateOf = (v0, v1, v2) => (sameValue(v2, v0) ? "clean" : sameValue(v2, v1) ? "already" : "conflict");
 
 // the choice a row starts with
-export const defaultChoice = (r) => (r.state === "clean" ? "kbz" : r.state === "removal" ? "r26" : r.state === "already" ? "r26" : null);
+export const defaultChoice = (r) => (r.design ? "r26" : r.state === "clean" ? "kbz" : r.state === "removal" ? "r26" : r.state === "already" ? "r26" : null);
 
 // merged widget set: R26 plus every row chosen "kbz". parentFor: rid -> parent id chosen for an added widget whose KBZ
 // parent is not in the result. Only what a chosen row changes is changed — R26's own quirks (a child listed under
@@ -127,7 +185,8 @@ export function applyMerge(W1, W2, rows, choices, parentFor = {}) {
   }
   // 3. properties
   for (const r of rows) if (r.kind === "prop" && take(r) && W[r.wid]) {
-    if (r.kbz === undefined) delete W[r.wid][r.key]; else W[r.wid][r.key] = clone(r.kbz);
+    if (r.path && r.path.length) setLeaf(W[r.wid], r.key, r.path, r.kbz, W1[r.wid]);
+    else if (r.kbz === undefined) delete W[r.wid][r.key]; else W[r.wid][r.key] = clone(r.kbz);
     touched.add(r.wid);
   }
   // 4. new parents
@@ -189,7 +248,7 @@ export function dependencyIssues(rows, choices, merged, kbzAssets, r26Assets, i1
   };
   for (const r of rows) {
     if (choices[r.rid] !== "kbz") continue;
-    if (r.kind === "prop") { if (Array.isArray(r.kbz)) r.kbz.forEach((x) => check(r, r.key, x)); else check(r, r.key, r.kbz); }
+    if (r.kind === "prop") { const key = leafName(r); if (Array.isArray(r.kbz)) r.kbz.forEach((x) => check(r, key, x)); else check(r, key, r.kbz); }
     if ((r.kind === "add" || r.kind === "gone") && merged.W[r.wid]) for (const [key, v] of Object.entries(merged.W[r.wid])) { if (Array.isArray(v)) v.forEach((x) => check(r, key, x)); else check(r, key, v); }
   }
   // the same kuid on two widgets of the result

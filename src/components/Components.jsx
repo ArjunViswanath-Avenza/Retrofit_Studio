@@ -7,7 +7,8 @@ import { OverallView } from "./Overall";
 import { ItemVisual } from "./SegmentVisual";
 import { SegmentMerge, componentSource } from "./SegmentMerge";
 import { ExcludeBar, adjust, keyName } from "./ExcludeBar";
-import { partsOf, componentRefs } from "../lib/components";
+import { partsOf, componentRefs, triageOf, kindOf, mergeCounts, usesPerCopy, TRIAGE } from "../lib/components";
+import { compWidgetIds } from "../lib/microapps";
 import { versionIndex } from "../lib/visual";
 import { useMore, MoreRows } from "../app/More";
 import "./segments.css";
@@ -32,6 +33,22 @@ const formName = (k) => k.split("/").pop().replace(/\.sm$/i, "");
 const formModule = (k) => { const s = k.split("/"); return s.slice(1, -1).join("/").replace(/^[^·]*·/, ""); };
 // distinct forms / templates / components using a component in one version
 const usedCount = (usage, i, key) => { const u = usage && usage[i] && usage[i].get(key); return u ? new Set(u.map((e) => e.kind + e.where)).size : 0; };
+// how sure the micro-app map is about the R26 copy
+const CONF = {
+  proven: ["Proven", "the R26 copy's root widget has this component's kuid"],
+  likely: ["Likely", "same class name, at least 30% of the widgets shared"],
+  weak: ["Weak", "same class name, under 30% of the widgets shared — check it"],
+  suggested: ["Suggested", "no kuid or name match; an R26 component shares ≥ 60% of the widgets — link it if it is the same"],
+  "set by you": ["Set by you", "linked by hand (Change the R26 copy)"],
+  none: ["None", "no R26 copy found"],
+};
+const TRI = Object.fromEntries(TRIAGE.map(([id, t, sub]) => [id, { t, sub }]));
+const confOf = (x) => (x && x.confidence) || null;
+function ConfPill({ x }) {
+  const c = confOf(x);
+  if (!c || !CONF[c]) return null;
+  return <span className={"cp-conf c-" + c.replace(/ /g, "")} title={CONF[c][1] + (x.method ? ` · ${x.method}` : "")}>{CONF[c][0]}</span>;
+}
 
 export function ComponentsView(props) {
   const { analyzing, drill } = props;
@@ -81,22 +98,29 @@ function CompDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usa
   const [q, setQ] = useState("");
   const [show, setShow] = useState(new Set(["customised", "new", "removed"]));
   const [sort, setSort] = useState(["total", -1]);
-  const [loc, setLoc] = useState(null); // R26 location / usage filter
+  const [loc, setLoc] = useState(null); // R26 location / usage / confidence filter
+  const [tq, setTq] = useState(null); // triage queue picked (replaces the status chips while on)
   const where = (r) => report && report.get(r.key); // the micro-app map's row for this component
+  const triage = useMemo(() => new Map(R.map((r) => [r.key, triageOf(r, labels, excl)])), [R, labels, excl]);
 
   const agg = useMemo(() => {
-    const a = { per: {}, st: {}, total: 0, conflicts: 0, aspects: {}, copies: 0, renamed: 0, ambiguous: 0 };
+    const a = { per: {}, st: {}, total: 0, conflicts: 0, aspects: {}, copies: 0, renamed: 0, ambiguous: 0, conf: {}, tri: {} };
     for (const l of labels) a.per[l] = 0;
     for (const r of R) {
       for (const l of labels) if (r.present[l]) a.per[l]++;
       a.st[r.status] = (a.st[r.status] || 0) + 1;
       a.total += r.total; a.conflicts += r.conflicts;
       for (const [k] of COLS) a.aspects[k] = (a.aspects[k] || 0) + r.changes[k];
+      const t = triage.get(r.key);
+      a.tri[t] = (a.tri[t] || 0) + 1;
       const x = report && report.get(r.key);
-      if (x) { if (x.copies && x.copies.length > 1) a.copies++; if (x.target && x.target.key !== r.key) a.renamed++; if (x.status === "ambiguous") a.ambiguous++; }
+      if (x) {
+        if (x.copies && x.copies.length > 1) a.copies++; if (x.target && x.target.key !== r.key) a.renamed++; if (x.status === "ambiguous") a.ambiguous++;
+        if (x.confidence) a.conf[x.confidence] = (a.conf[x.confidence] || 0) + 1;
+      }
     }
     return a;
-  }, [R, labels, report]);
+  }, [R, labels, report, triage]);
 
   const rows = useMemo(() => {
     const ql = q.trim().toLowerCase();
@@ -106,14 +130,15 @@ function CompDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usa
       if (loc === "renamed" && !(x && x.target && x.target.key !== r.key)) return false;
       if (loc === "ambiguous" && !(x && x.status === "ambiguous")) return false;
       if (loc === "unused" && !(usage && labels.some((l, i) => r.present[l] && !usedCount(usage, i, r.key)))) return false;
+      if (loc && loc.startsWith("conf:") && confOf(x) !== loc.slice(5)) return false;
       return !ql || (r.key + " " + (x && x.target ? x.target.app + " " + x.target.key : "")).toLowerCase().includes(ql);
     };
-    const out = R.map((r, i) => ({ r, i })).filter(({ r }) => show.has(r.status) && keep(r));
+    const out = R.map((r, i) => ({ r, i })).filter(({ r }) => (tq ? triage.get(r.key) === tq : show.has(r.status)) && keep(r));
     const [k, dir] = sort;
-    const val = ({ r }) => (k === "name" ? r.name.toLowerCase() : k === "total" ? r.total : k === "conflicts" ? r.conflicts : k === "used" ? usedCount(usage, 1, r.key) : r.changes[k]);
+    const val = ({ r }) => (k === "name" ? r.name.toLowerCase() : k === "total" ? r.total : k === "conflicts" ? r.conflicts : k === "used" ? usedCount(usage, 1, r.key) : k === "triage" ? TRIAGE.findIndex(([id]) => id === triage.get(r.key)) : r.changes[k]);
     out.sort((x, y) => { const a = val(x), b = val(y); return (a < b ? -1 : a > b ? 1 : 0) * dir || x.r.name.localeCompare(y.r.name); });
     return out;
-  }, [R, q, show, sort, loc, report, usage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [R, q, show, sort, loc, report, usage, tq, triage]); // eslint-disable-line react-hooks/exhaustive-deps
   const page = useMore(rows);
 
   const top = useMemo(() => [...R].filter((r) => r.total > 0).sort((a, b) => b.total - a.total).slice(0, 12), [R]);
@@ -126,10 +151,11 @@ function CompDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usa
   );
 
   const exportCsv = () => {
-    const out = [["component", "status", "aspect", "item", "change", "bucket", `in_${N || "new"}`, "note", `${N || "new"}_location`, ...labels.map((l) => `used by (${l})`)]];
-    const tail = (r) => { const x = where(r); return [x && x.target ? `${x.target.app}/userwidgets/${x.target.key}` : "", ...labels.map((l, i) => (usage ? usedCount(usage, i, r.key) : ""))]; };
+    const out = [["component", "status", "aspect", "item", "change", "bucket", `in_${N || "new"}`, "note", `${N || "new"}_location`, ...labels.map((l) => `used by (${l})`), "triage", "kind of customisation", `${N || "new"} link`, "how matched"]];
+    const tail = (r) => { const x = where(r); return [x && x.target ? `${x.target.app}/userwidgets/${x.target.key}` : "", ...labels.map((l, i) => (usage ? usedCount(usage, i, r.key) : "")), TRI[triage.get(r.key)].t, kindOf(r, excl) || "", x && x.confidence ? CONF[x.confidence][0] : "", x ? x.method : ""]; };
     for (const r of R) {
       const s = r.structure["01"];
+      if (!r.total) out.push([r.key, r.status, "", "", "", "", "", "", ...tail(r)]); // one line per component at least
       if (s && (s.added || s.removed || s.moved || s.propWidgets))
         out.push([r.key, r.status, "structure", `${O}→${C} widgets`, `+${s.added} -${s.removed} moved ${s.moved} props ${s.propWidgets} reordered ${s.reordered || 0}`, "", "", "", ...tail(r)]);
       for (const [k] of COLS) {
@@ -176,10 +202,22 @@ function CompDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usa
         </div>
       )}
 
+      <div className="cp-triage">
+        <div className="cp-th">Triage <span className="tag">what each component needs{N ? `, judged against the ${N} copy compared` : ""} — click one to list only those</span>
+          {tq && <button className="btn ghost tiny" onClick={() => setTq(null)}>show all</button>}</div>
+        <div className="cp-tqs">
+          {TRIAGE.filter(([id]) => agg.tri[id]).map(([id, t, sub]) => (
+            <button key={id} className={"cp-tq t-" + id + (tq === id ? " on" : "")} onClick={() => setTq((v) => (v === id ? null : id))} title={sub}>
+              <b>{agg.tri[id]}</b><span>{t}</span><i>{sub}</i>
+            </button>
+          ))}
+        </div>
+      </div>
+
       <ExcludeBar raw={raw} excl={excl} setExcl={setExcl} labels={labels} noun="component" />
       <div className="searchbar">
         <input type="text" placeholder="Search components…" value={q} onChange={(e) => setQ(e.target.value)} />
-        {STATUSES.filter((st) => st !== "absent" || N).map((st) => (
+        {tq ? <span className="tag">Triage: <b>{TRI[tq].t}</b> ({agg.tri[tq] || 0}) — the status chips are off while a triage group is picked</span> : STATUSES.filter((st) => st !== "absent" || N).map((st) => (
           <span key={st} className={"chip" + (show.has(st) ? " on" : "")} onClick={() => toggle(st)}>
             {show.has(st) ? "✓ " : ""}{statusLabel(st, labels)} ({agg.st[st] || 0})
           </span>
@@ -196,6 +234,14 @@ function CompDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usa
           {!usage && <span className="tag">· finding where each component is used…</span>}
         </div>
       )}
+      {N && report && (
+        <div className="sg-locbar">
+          <span className="tag">{N} link:</span>
+          {Object.keys(CONF).filter((c) => agg.conf[c]).map((c) => (
+            <span key={c} className={"chip" + (loc === "conf:" + c ? " on" : "")} title={CONF[c][1]} onClick={() => setLoc((v) => (v === "conf:" + c ? null : "conf:" + c))}>{loc === "conf:" + c ? "✓ " : ""}{CONF[c][0]} ({agg.conf[c]})</span>
+          ))}
+        </div>
+      )}
 
       <table>
         <thead>
@@ -203,6 +249,7 @@ function CompDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usa
             {th("name", "Component")}
             {labels.map((l) => <th key={l} style={{ textAlign: "center" }}>{l}</th>)}
             <th>Status</th>
+            {th("triage", "Triage")}
             {th("structure", `Structure ${O}→${C}`)}
             {COLS.slice(1).map(([k, t]) => th(k, t))}
             {N && th("conflicts", "Conflicts")}
@@ -220,10 +267,12 @@ function CompDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usa
                   <td key={l} style={{ textAlign: "center" }}>
                     {r.present[l] ? <span className="a">✓</span> : <span className="tag">—</span>}
                     {x && x.target && <div className="sg-app">{x.target.app}{x.target.key !== r.key ? <span className="sg-ren" title={x.target.key}> as {x.target.key.split(".").pop()}</span> : null}{x.copies && x.copies.length > 1 ? <span className="sg-more"> +{x.copies.length - 1}</span> : null}</div>}
+                    {x && (x.target || x.confidence === "suggested") && <div><ConfPill x={x} /></div>}
                   </td>
                 );
               })}
               <td><span className={"cstat cs-" + r.status}>{statusLabel(r.status, labels)}</span>{r.statusBefore === "customised" && r.status === "unchanged" && <span className="tag" title="its only changes are in excluded parameters"> · only excluded changes</span>}{where(r) && where(r).status === "ambiguous" && <span className="pill b2" style={{ marginLeft: 4 }} title={where(r).method}>check copy</span>}</td>
+              <td><span className={"cp-tri t-" + triage.get(r.key)} title={TRI[triage.get(r.key)].sub}>{TRI[triage.get(r.key)].t}</span>{kindOf(r, excl) && <div className="tag">{kindOf(r, excl)}</div>}</td>
               <td>{structText(r.structure["01"])}</td>
               {COLS.slice(1).map(([k]) => (
                 <td key={k} style={{ textAlign: "center" }}>
@@ -243,10 +292,11 @@ function CompDashboard({ bulk, raw, excl, setExcl, labels, setDrill, report, usa
   );
 }
 
-function ComponentDetail({ r, picked, labels, setDrill, aspect, setAspect, renderReport, overall, setOverall, report, usage, usageProg, excl }) {
+function ComponentDetail({ r, picked, labels, setDrill, aspect, setAspect, renderReport, overall, setOverall, report, usage, usageProg, excl, relink }) {
   const [O, C, N] = labels;
   const [pairIdx, setPairIdx] = useState(0);
   const [merging, setMerging] = useState(false);
+  const [picking, setPicking] = useState(false);
   const smMaps = useMemo(() => picked.map((p) => {
     const parts = p && p.comps ? partsOf(r.key, p.comps.get(r.key)) : null;
     return parts ? parts.structure : undefined;
@@ -265,7 +315,11 @@ function ComponentDetail({ r, picked, labels, setDrill, aspect, setAspect, rende
     usesOf: (i) => (usage && usage[i] ? usage[i].get(r.key) : null),
     usageReady: !!usage,
   }), [r, picked, labels, smMaps, usage, x]); // eslint-disable-line react-hooks/exhaustive-deps
-  const mergeSource = useMemo(() => (N && picked[2] ? componentSource(r, picked, x) : null), [N, r, picked, x]);
+  // R26 uses of each copy (a form uses the copy in its own micro app, else the shared one)
+  const perCopy = useMemo(() => (usage && usage[2] && x && x.copies && x.copies.length ? usesPerCopy(usage[2].get(r.key), x.copies) : null), [usage, x, r.key]);
+  const mergeSource = useMemo(() => (N && picked[2] ? componentSource(r, picked, x, perCopy) : null), [N, r, picked, x, perCopy]);
+  const linkTag = x && x.target ? `${x.target.app}/${x.target.key}` : "";
+  const doRelink = (link) => { setPicking(false); relink(r.key, link); };
   const canMerge = !!(mergeSource && r.present[O] && r.present[C] && mergeSource.baseFiles && mergeSource.kbzFiles && mergeSource.copies.length);
 
   const count = (k) => (k === "structure" ? r.changes.structure : k === "files" || k === "visual" ? null : r.changes[k]);
@@ -285,6 +339,13 @@ function ComponentDetail({ r, picked, labels, setDrill, aspect, setAspect, rende
       {excl && excl.size > 0 && <div className="sx-note">Not counted as a change here: <b>{[...excl].map(keyName).join(", ")}</b> — set with “Exclude parameters” on the component list.</div>}
       <h2 className="page">
         {r.name} <span className={"cstat cs-" + r.status} style={{ fontSize: 13, verticalAlign: "middle" }}>{statusLabel(r.status, labels)}</span>
+        {(() => { const t = triageOf(r, labels, excl), k = kindOf(r, excl), m = mergeCounts(r, excl); return (
+          <span className="cp-head">
+            <span className={"cp-tri t-" + t} title={TRI[t].sub}>{TRI[t].t}</span>
+            {k && <span className="tag">{k}</span>}
+            {r.merge && <span className="tag" title={`rows the Move to ${N} popup starts with, against the copy compared`}>· {m.clean} clean · {m.conflict} conflicts · {m.removal} removals · {m.already} already in {N}{m.design ? ` · ${m.design} design-time kept as ${N}` : ""}</span>}
+          </span>
+        ); })()}
       </h2>
       <div className="crumb">
         userwidgets/{r.key} · {labels.map((l) => (
@@ -309,16 +370,28 @@ function ComponentDetail({ r, picked, labels, setDrill, aspect, setAspect, rende
         </table>
         {N && x && (
           <div className="sg-match">
-            <div><span className="tag">{N} copy compared:</span> {x.target ? <b>{x.target.app}/{x.target.key}</b> : <span className="r">none found</span>} <span className="tag">· {x.method}</span>
-              {x.status === "ambiguous" && <span className="pill b2" style={{ marginLeft: 6 }}>two copies are about as close — check which one you need</span>}</div>
-            {x.copies && x.copies.length > 1 && (
-              <div className="sg-copies"><span className="tag">Other copies in {N} ({x.copies.length - 1}):</span>{x.copies.slice(1).map((c) => <span key={c.app + c.key} className="sg-copy">{c.app}{c.key !== (x.target && x.target.key) ? `/${c.key}` : ""}{c.score != null && <b>{pct(c.score)}</b>}</span>)}</div>
+            <div><span className="tag">{N} copy compared:</span> {x.target ? <b>{x.target.app}/{x.target.key}</b> : <span className="r">none</span>} <ConfPill x={x} /> <span className="tag">· {x.method}</span>
+              {x.status === "ambiguous" && <span className="pill b2" style={{ marginLeft: 6 }}>two copies are about as close — check which one you need</span>}
+              {relink && <span className="cp-linkbtns">
+                <button className="btn ghost tiny" onClick={() => setPicking((v) => !v)}>{picking ? "Close" : `Change the ${N} copy…`}</button>
+                {x.manual && <button className="btn ghost tiny" onClick={() => doRelink(null)} title={`automatic: ${x.auto && x.auto.method}`}>Back to automatic</button>}
+              </span>}
+            </div>
+            {x.linkMissing && <p className="note">Your link to {x.linkMissing.app}/{x.linkMissing.key} was not found in this {N} folder — the automatic match is shown.</p>}
+            {!x.target && x.suggestions && x.suggestions.length > 0 && (
+              <div className="cp-sugg"><span className="tag">Suggested (shares widgets, no kuid or name match — nothing is compared until you link one):</span>
+                {x.suggestions.map((c) => <span key={c.app + c.key} className="sg-copy">{c.name} <span className="tag">{c.app}</span><b>{pct(c.score)}</b>{relink && <button className="btn ghost tiny" onClick={() => doRelink({ app: c.app, key: c.key })}>Link</button>}</span>)}
+              </div>
             )}
+            {x.copies && x.copies.length > 0 && (
+              <CopyList x={x} perCopy={perCopy} N={N} usageReady={!!usage} onCompare={relink ? (c) => doRelink({ app: c.app, key: c.key }) : null} />
+            )}
+            {picking && <LinkPicker r={r} x={x} picked={picked} N={N} onPick={doRelink} />}
           </div>
         )}
       </div>
 
-      <CompUsedBy key={"used:" + r.key} r={r} labels={labels} usage={usage} usageProg={usageProg} />
+      <CompUsedBy key={"used:" + r.key + linkTag} r={r} labels={labels} usage={usage} usageProg={usageProg} />
 
       <div className="aspecttabs">
         {tabs.map(([k, t]) => {
@@ -334,11 +407,11 @@ function ComponentDetail({ r, picked, labels, setDrill, aspect, setAspect, rende
       </div>
       <p className="note">Counts are {C} vs {O} changes (the customisation). Each tab also shows how {N || "the new base"} compares.</p>
 
-      {cur === "visual" && <ItemVisual key={"visual:" + r.key} adapter={adapter} r={r} labels={labels} excludeKeys={excl} />}
+      {cur === "visual" && <ItemVisual key={"visual:" + r.key + linkTag} adapter={adapter} r={r} labels={labels} excludeKeys={excl} />}
 
       {cur === "structure" && (
         r.errors.structure ? <p className="note">Could not read the widget tree: {r.errors.structure}</p> : (
-          <FormTree key={r.key} formKey={r.key} picked={picked} labels={labels} pairIdx={pairIdx} setPairIdx={setPairIdx} previewKind="component" excludeKeys={excl}
+          <FormTree key={r.key + linkTag} formKey={r.key} picked={picked} labels={labels} pairIdx={pairIdx} setPairIdx={setPairIdx} previewKind="component" excludeKeys={excl}
             getMap={(i) => smMaps[i]} embedded />
         )
       )}
@@ -355,10 +428,81 @@ function ComponentDetail({ r, picked, labels, setDrill, aspect, setAspect, rende
                 )}
                 {cur === "contract" && <p className="note">Entries are matched by section + propertyKey; the tool-generated <code>kuid</code> / <code>srcWgtKUID</code> ids are ignored when deciding whether an entry changed.</p>}
                 {cur === "actions" && <p className="note">Generated action sequences, matched by name; the label beside each is the event and widget from its <code>/** … defined for … **/</code> comment.</p>}
+                {cur === "actions" && model.fromJson && Object.keys(model.fromJson).length > 0 && (
+                  <p className="note">
+                    Read from <code>studioactions/…/AS_*.json</code> (an event names the action, the Actions file does not have it{model.noFile && model.noFile.length ? ` — no ControllerActions.js in ${model.noFile.join(", ")}` : ""}): {Object.entries(model.fromJson).map(([l, list]) => `${l} ${list.length}`).join(" · ")}.
+                    Rendered the way Visualizer generates the file: a code snippet as written, a controller function call as <code>return self.fn.call(this);</code>.
+                    {model.approx && model.approx.length > 0 && <> <b>Approximate</b> (other step types or nested steps, not rendered): {model.approx.join(", ")}.</>}
+                  </p>
+                )}
                 {renderReport(model)}
               </>
             )
       )}
+    </div>
+  );
+}
+
+// every R26 copy of the component: widget overlap, where R26 forms use it, and a way to compare another one
+function CopyList({ x, perCopy, N, usageReady, onCompare }) {
+  const uses = (c) => (perCopy ? perCopy.get(`${c.app}/${c.key}`) || 0 : null);
+  const best = perCopy ? x.copies.reduce((b, c) => (uses(c) > uses(b) ? c : b), x.copies[0]) : null;
+  const hint = best && best !== x.copies[0] && uses(best) > uses(x.copies[0]);
+  return (
+    <div className="cp-copies">
+      <table className="sg-loc">
+        <thead><tr><th>{N} copy</th><th>Widgets shared</th><th>Placed by {N} forms · templates · components</th><th /></tr></thead>
+        <tbody>
+          {x.copies.map((c, i) => (
+            <tr key={c.app + c.key} className={i === 0 ? "cp-cur" : ""}>
+              <td><span className="sg-apptag">{c.app}</span> <span className="mono">{c.key}</span>{c.kuid && x.kuid && c.kuid === x.kuid && <span className="tag" title="its root widget has this component's kuid"> · same kuid</span>}</td>
+              <td>{c.score != null ? pct(c.score) : ""}</td>
+              <td>{!usageReady ? "…" : uses(c) ? <b>{uses(c)}</b> : <span className="sg-zero">placed nowhere</span>}</td>
+              <td>{i === 0 ? <span className="mg-best">compared</span> : onCompare && <button className="btn ghost tiny" onClick={() => onCompare(c)}>Compare this one</button>}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {hint && <p className="note">⚠ {N} forms place <b>{best.app}</b>'s copy more ({uses(best)} vs {uses(x.copies[0])}) — the copy compared was chosen by widget overlap.{onCompare && <> <button className="btn ghost tiny" onClick={() => onCompare(best)}>Compare {best.app}'s copy</button></>}</p>}
+      {perCopy && perCopy.unresolved > 0 && <p className="note">{perCopy.unresolved} use{perCopy.unresolved === 1 ? "" : "s"} in micro apps with no copy of their own and no shared copy — not counted against a copy.</p>}
+      <p className="note sg-foot">A form is counted for the copy in its own micro app, else for the copy in a shared micro app (Resources / Commons) — the copy a micro-app build can reach. This is how the tool reads it; Visualizer itself only names the root widget's kuid.</p>
+    </div>
+  );
+}
+
+// pick the R26 counterpart by hand: every R26 component of the channel, closest widget overlap first
+function LinkPicker({ r, x, picked, N, onPick }) {
+  const [q, setQ] = useState("");
+  const catalog = useMemo(() => (picked[2] && picked[2].compCatalog) || [], [picked]);
+  const mine = useMemo(() => compWidgetIds((picked[1] && picked[1].comps.get(r.key)) || (picked[0] && picked[0].comps.get(r.key))), [picked, r.key]);
+  const scored = useMemo(() => catalog.map((c) => {
+    let i = 0;
+    for (const id of mine) if (c.ids.has(id)) i++;
+    const u = mine.size + c.ids.size - i;
+    return { c, score: u ? i / u : 0 };
+  }).sort((a, b) => b.score - a.score || a.c.name.localeCompare(b.c.name)), [catalog, mine]);
+  const ql = q.trim().toLowerCase();
+  const shown = (ql ? scored.filter(({ c }) => (c.app + " " + c.key).toLowerCase().includes(ql)) : scored).slice(0, 40);
+  const cur = x && x.target ? `${x.target.app}/${x.target.key}` : "";
+  return (
+    <div className="cp-picker">
+      <div className="cp-ph">
+        <b>Link {r.name} to an {N} component</b>
+        <input type="text" autoFocus placeholder={`Search ${catalog.length} ${N} components by name, namespace or micro app…`} value={q} onChange={(e) => setQ(e.target.value)} />
+        <button className="btn ghost tiny" onClick={() => onPick("none")} title="it has no counterpart: nothing is compared or moved">No {N} counterpart</button>
+      </div>
+      <div className="cp-plist">
+        {shown.map(({ c, score }) => (
+          <div key={c.app + c.key} className={"cp-prow" + (`${c.app}/${c.key}` === cur ? " on" : "")}>
+            <span className="sg-apptag">{c.app}</span><b>{c.name}</b><span className="mono tag">{c.key}</span>
+            {c.kuid && r && x && x.kuid === c.kuid && <span className="tag">same kuid</span>}
+            <span className="cp-pscore">{pct(score)} widgets shared</span>
+            {`${c.app}/${c.key}` === cur ? <span className="mg-best">compared now</span> : <button className="btn tiny" onClick={() => onPick({ app: c.app, key: c.key })}>Link</button>}
+          </div>
+        ))}
+        {!shown.length && <p className="note">No {N} component matches.</p>}
+      </div>
+      <p className="note sg-foot">The link is kept in this browser for these customisation and {N} folders and this channel, and is used next time the micro-app map runs. The component is compared again against the copy you pick.</p>
     </div>
   );
 }

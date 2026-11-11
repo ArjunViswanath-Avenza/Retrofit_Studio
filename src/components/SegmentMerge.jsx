@@ -10,7 +10,7 @@ import { renderTemplate, previewAssets } from "../lib/preview";
 import { versionIndex } from "../lib/visual";
 import { partsOf } from "../lib/components";
 import { looseJson } from "../lib/blueprint";
-import { mergeRows, defaultChoice, applyMerge, dependencyIssues, fileStyle, templateFiles } from "../lib/segmerge";
+import { mergeRows, defaultChoice, applyMerge, dependencyIssues, fileStyle, templateFiles, rowLabel, leafName } from "../lib/segmerge";
 import "./widgetdialog.css";
 import "./segmerge.css";
 
@@ -93,8 +93,9 @@ export function segmentSource(r, picked, x) {
 }
 
 // a user widget: its userwidgetmodel.sm widget files; the R26 copy the micro-app map chose, then every other copy
-// (R26 may keep it under another namespace — the folder is written under R26's own name)
-export function componentSource(r, picked, x) {
+// (R26 may keep it under another namespace — the folder is written under R26's own name). perCopy: R26 uses per copy
+// ("app/key" -> n, from usesPerCopy) — the copies forms use start ticked
+export function componentSource(r, picked, x, perCopy) {
   const p26 = picked[2];
   const structure = (p) => { const parts = p && p.comps && p.comps.get(r.key) ? partsOf(r.key, p.comps.get(r.key)) : null; return parts ? parts.structure : null; };
   const base = { noun: "component", name: r.name, ch: "desktop", baseFiles: structure(picked[0]), kbzFiles: structure(picked[1]) };
@@ -108,10 +109,16 @@ export function componentSource(r, picked, x) {
     ...base,
     copies: list.map((c, i) => ({
       app: c.app, label: c.key, best: i === 0, score: c.score, path: `${c.app}/userwidgets/${c.key}/userwidgetmodel.sm`,
+      uses: perCopy ? perCopy.get(`${c.app}/${c.key}`) || 0 : null,
       files: () => folderFiles(p26, c.app, `/userwidgets/${c.key}/userwidgetmodel.sm/`),
     })),
   };
 }
+// the copies ticked to begin with: those R26 forms use (when known), else the copy compared
+const firstTicked = (copies) => {
+  const used = copies.map((c, i) => (c.uses ? i : -1)).filter((i) => i >= 0);
+  return new Set(used.length ? used : [0]);
+};
 
 export function SegmentMerge({ source, picked, labels, onClose }) {
   const [O, C, N] = labels;
@@ -119,12 +126,13 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
   const copies = source.copies;
   const [base, setBase] = useState(null); // { W0, W1 }
   const [data, setData] = useState({}); // copy index -> { W2, raw2, rows, style, other }
-  const [include, setInclude] = useState(() => new Set([0]));
+  const [include, setInclude] = useState(() => firstTicked(copies));
   const [active, setActive] = useState(0);
   const [choices, setChoices] = useState({}); // copy index -> { rid: "kbz" | "r26" }
   const [parentFor, setParentFor] = useState({}); // copy index -> { rid: parent id }
   const [assets, setAssets] = useState({}); // "kbz" | copy index -> previewAssets
   const [show, setShow] = useState(new Set(["conflict", "clean", "removal"]));
+  const [showDesign, setShowDesign] = useState(false); // design-time / kuid rows: kept as R26, listed on request
   const [q, setQ] = useState("");
   const [sel, setSel] = useState(null); // widget id
   const [width, setWidth] = useState(1024);
@@ -209,9 +217,13 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
 
   // the change list, grouped by widget
   const counts = useMemo(() => {
-    const n = { clean: 0, already: 0, conflict: 0, removal: 0, undecided: 0, moving: 0 };
+    const n = { clean: 0, already: 0, conflict: 0, removal: 0, undecided: 0, moving: 0, design: 0, designMoving: 0 };
     if (!D) return n;
-    for (const row of D.rows) { n[row.state]++; if (row.state === "conflict" && !ch[row.rid]) n.undecided++; if (ch[row.rid] === "kbz") n.moving++; }
+    for (const row of D.rows) {
+      if (ch[row.rid] === "kbz") n.moving++;
+      if (row.design) { n.design++; if (ch[row.rid] === "kbz") n.designMoving++; continue; }
+      n[row.state]++; if (row.state === "conflict" && !ch[row.rid]) n.undecided++;
+    }
     return n;
   }, [D, ch]);
   const groups = useMemo(() => {
@@ -219,18 +231,19 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
     const ql = q.trim().toLowerCase();
     const m = new Map();
     for (const row of D.rows) {
-      if (!show.has(row.state)) continue;
-      if (ql && !(row.wid.toLowerCase().includes(ql) || (row.key || "").toLowerCase().includes(ql) || KIND[row.kind].includes(ql))) continue;
+      if (row.design ? !showDesign : !show.has(row.state)) continue;
+      if (ql && !(row.wid.toLowerCase().includes(ql) || (row.kind === "prop" && rowLabel(row).toLowerCase().includes(ql)) || KIND[row.kind].includes(ql))) continue;
       if (!m.has(row.wid)) m.set(row.wid, []);
       m.get(row.wid).push(row);
     }
     return [...m];
-  }, [D, show, q]);
-  // conflicts by what they are about, to decide many at once
+  }, [D, show, showDesign, q]);
+  // conflicts by what they are about (a property, or one value of it: responsiveData › width), to decide many at once
   const conflictGroups = useMemo(() => {
     if (!D) return [];
     const m = new Map();
-    for (const row of D.rows) if (row.state === "conflict") { const k = row.kind === "prop" ? row.key : KIND[row.kind]; if (!m.has(k)) m.set(k, { k, total: 0, open: 0, pred: row.kind === "prop" ? (x) => x.state === "conflict" && x.key === row.key : (x) => x.state === "conflict" && x.kind === row.kind }); const g = m.get(k); g.total++; if (!ch[row.rid]) g.open++; }
+    const about = (x) => (x.kind !== "prop" ? KIND[x.kind] : x.path && x.path.length ? `${x.key} › ${leafName(x)}` : x.key);
+    for (const row of D.rows) if (row.state === "conflict" && !row.design) { const k = about(row); if (!m.has(k)) m.set(k, { k, total: 0, open: 0, pred: (x) => x.state === "conflict" && !x.design && about(x) === k }); const g = m.get(k); g.total++; if (!ch[row.rid]) g.open++; }
     return [...m.values()].sort((a, b) => b.total - a.total);
   }, [D, ch]);
   const containers = useMemo(() => (merged ? Object.entries(merged.W).filter(([, w]) => Array.isArray(w.children) || /Flex|Form/.test(w.wType || "")).map(([id]) => id).sort() : []), [merged]);
@@ -266,6 +279,7 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
                 <input type="checkbox" checked={include.has(i)} onClick={(e) => e.stopPropagation()} onChange={() => setInclude((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; })} />
                 <b>{cp.app || N}</b>{cp.label !== source.name && <span className="tag mono"> {source.noun === "component" ? cp.label : `as ${cp.label}`}</span>}
                 {cp.best ? <span className="mg-best">compared copy</span> : cp.score != null && <span className="tag"> {Math.round(cp.score * 100)}%</span>}
+                {cp.uses != null && <span className={"tag" + (cp.uses ? "" : " mg-unused")} title={`${N} forms, templates and components placing this copy`}> · {cp.uses ? `used ×${cp.uses}` : "placed nowhere"}</span>}
                 {include.has(i) && (b.length ? <span className="mg-blk" title={b.join(" · ")}>{b[0]}</span> : <span className="mg-ok">ready</span>)}
               </span>
             );
@@ -282,12 +296,14 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
                   <span className="mg-st removal">{counts.removal} removals</span>
                   <span className="mg-st already">{counts.already} already in {N}</span>
                   <span className="tag">{counts.moving} change{counts.moving === 1 ? "" : "s"} will move</span>
+                  {counts.design > 0 && <span className="tag" title="Visualizer's own canvas settings (context, breakpointInfo, prevDevice …) and widget ids (kuid): noise when moved, and a kuid change can break the component contract's links">· {counts.design} design-time / kuid row{counts.design === 1 ? "" : "s"} kept as {N}{counts.designMoving ? ` (${counts.designMoving} set to move)` : ""}</span>}
                 </div>
                 <div className="mg-tools">
                   {["conflict", "clean", "removal", "already"].map((s) => <span key={s} className={"chip" + (show.has(s) ? " on" : "")} onClick={() => toggleShow(s)}>{show.has(s) ? "✓ " : ""}{STATE[s]}</span>)}
+                  {counts.design > 0 && <span className={"chip" + (showDesign ? " on" : "")} onClick={() => setShowDesign((v) => !v)}>{showDesign ? "✓ " : ""}design-time ({counts.design})</span>}
                   <input type="text" placeholder="Find widget or property…" value={q} onChange={(e) => setQ(e.target.value)} />
-                  <button className="btn ghost tiny" onClick={() => setMany((x) => x.state === "clean", "kbz")}>Tick all clean</button>
-                  <button className="btn ghost tiny" onClick={() => setMany((x) => x.state === "clean", "r26")}>Untick all clean</button>
+                  <button className="btn ghost tiny" onClick={() => setMany((x) => x.state === "clean" && !x.design, "kbz")}>Tick all clean</button>
+                  <button className="btn ghost tiny" onClick={() => setMany((x) => x.state === "clean" && !x.design, "r26")}>Untick all clean</button>
                 </div>
                 {conflictGroups.length > 0 && (
                   <div className="mg-bulk">
@@ -311,7 +327,7 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
                         return (
                           <div key={row.rid} className={"mg-row s-" + row.state + (row.state === "conflict" && !v ? " undecided" : "")} onClick={() => setSel(wid)}>
                             <span className={"mg-pill " + row.state}>{STATE[row.state]}</span>
-                            <span className="mg-what">{row.kind === "prop" ? <span className="mono">{row.key}</span> : KIND[row.kind]}{row.note && <span className="tag"> · {row.note}</span>}</span>
+                            <span className="mg-what">{row.kind === "prop" ? <span className="mono" title={row.path && row.path.length ? "one value of this property — compared value by value" : undefined}>{rowLabel(row)}</span> : KIND[row.kind]}{row.design && <span className="tag"> · design-time, kept as {N} unless ticked</span>}{row.note && <span className="tag"> · {row.note}</span>}</span>
                             {(row.kind === "prop" || row.kind === "parent" || row.kind === "order") && (
                               <span className="mg-vals">
                                 <span title={full(row.base)}><i>{O}</i> {short(row.base)}</span>
