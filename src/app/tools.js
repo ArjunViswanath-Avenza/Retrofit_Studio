@@ -11,7 +11,7 @@ export const AREAS = [
 
 const uiMenu = (L) => [
   { id: "home", ico: "◧", label: "Project Overview", desc: `Counts across ${names3(L)}` },
-  { id: "forms", ico: "▤", label: "FormForge", desc: "Forms retrofit", items: [{ id: "forms", label: "Form comparison" }, { id: "forms-all", label: "Overall comparison" }] },
+  { id: "forms", ico: "▤", label: "FormForge", desc: "Forms retrofit", items: [{ id: "forms", label: "Form comparison" }, { id: "forms-pair", label: "Pair comparison" }, { id: "forms-all", label: "Overall comparison" }] },
   { id: "controllers", ico: "⚙", label: "CtrlSync", desc: "Form-level controllers", items: [{ id: "controllers", label: "Controller comparison" }, { id: "controllers-all", label: "Overall comparison" }] },
   { id: "mvc", ico: "❏", label: "MVC Bridge", desc: "Business & Presentation controllers", items: [{ id: "mvc", label: "Business & Presentation comparison" }, { id: "mvc-all", label: "Overall comparison" }] },
   { id: "comps", ico: "⧉", label: "COMP-are", desc: "User widgets (components)", items: [{ id: "comps", label: "Component comparison" }, { id: "comps-all", label: "Overall comparison" }] },

@@ -5,6 +5,8 @@ import { extractComponent, extractModule, buildModel, mvcKind } from "../lib/ana
 import { TwoCol, ThreeCol } from "../components/DiffView";
 import { Checklist } from "../components/Checklist";
 import { FormsView } from "../components/Forms";
+import { FormsRetroView } from "../components/FormRetro";
+import { analyzeForms } from "../lib/formretro";
 import { OverallView } from "../components/Overall";
 import { ComponentsView } from "../components/Components";
 import { SegmentsView } from "../components/Segments";
@@ -12,7 +14,7 @@ import { analyzeComponents, componentUsage, relinkUsage } from "../lib/component
 import { analyzeSegments, segmentUsage, segmentFiles } from "../lib/segments";
 import { scanFolder } from "../lib/scan";
 import { MicroAppUpload, MicroAppMap } from "../components/MicroApps";
-import { scanMicroApps, alignMicroApps, missingMicroApps, channelScan, relinkComponent, CHANNELS } from "../lib/microapps";
+import { scanMicroApps, alignMicroApps, missingMicroApps, channelScan, relinkComponent, relinkForm, CHANNELS } from "../lib/microapps";
 import { clean } from "../lib/names";
 import { foreground, background, isStopped, yieldNow, pool } from "../lib/jobs";
 import { useProjects, derive, SlotLink } from "../app/projects";
@@ -27,18 +29,22 @@ const monoScan = (s) => (s && s.kind === "monolith" ? derive(s.files, "scan", ()
 const maScan = (s) => (s && s.kind === "microapps" ? derive(s.files, "microapps", () => scanMicroApps(s.files, scanFolder)) : null);
 // changes whenever one of these folders is loaded again
 const slotsVersion = (slots, ids) => ids.map((id) => (slots[id] ? +slots[id].loadedAt : 0)).join("|");
-// user-widget links set by hand (COMP-are · Change the R26 copy), kept in this browser per KBZ folder · R26 folder · channel
-const LINKS_KEY = "rs.compLinks";
-const readLinks = (pid) => { try { return JSON.parse(localStorage.getItem(LINKS_KEY) || "{}")[pid] || {}; } catch { return {}; } };
-const writeLink = (pid, key, link) => {
+// user-widget / form links set by hand (COMP-are · Change the R26 copy, FormForge · Change the R26 form), kept in this
+// browser per KBZ folder · R26 folder · channel
+const LINKS_KEY = "rs.compLinks", FORM_LINKS_KEY = "rs.formLinks";
+const readLinks = (pid, store = LINKS_KEY) => { try { return JSON.parse(localStorage.getItem(store) || "{}")[pid] || {}; } catch { return {}; } };
+const writeLink = (pid, key, link, store = LINKS_KEY) => {
   try {
-    const all = JSON.parse(localStorage.getItem(LINKS_KEY) || "{}");
+    const all = JSON.parse(localStorage.getItem(store) || "{}");
     const m = all[pid] || {};
     if (link == null) delete m[key]; else m[key] = link;
     all[pid] = m;
-    localStorage.setItem(LINKS_KEY, JSON.stringify(all));
+    localStorage.setItem(store, JSON.stringify(all));
   } catch { /* kept for this session only */ }
 };
+// FormForge conflict rules for every form ([{ by: "about" | "bp", k, choice }]), kept in this browser
+const RULES_KEY = "rs.formRules";
+const readRules = () => { try { const x = JSON.parse(localStorage.getItem(RULES_KEY) || "[]"); return Array.isArray(x) ? x : []; } catch { return []; } };
 
 /* ================================================================ monolith → monolith */
 export function CompareMono(props) {
@@ -104,15 +110,17 @@ export function CompareMA(props) {
     const C = CHANNELS[channel];
     const mono = [channelScan(pick[0], C.mono), channelScan(pick[1], C.mono)];
     const missing = await missingMicroApps(pick[2]);
-    const { r26, report } = await alignMicroApps(mono, pick[2], channel, setAligning, readLinks(pid));
+    const { r26, report } = await alignMicroApps(mono, pick[2], channel, setAligning, readLinks(pid), readLinks(pid, FORM_LINKS_KEY));
     setAligned({ picked: [mono[0], mono[1], r26], report, missing, channel });
     if (keep !== true) props.setNav("home");
   });
-  // a component linked by hand to another R26 copy (or to none): saved, and applied without re-running the map
+  // a component / form linked by hand to another R26 copy (or to none): saved, and applied without re-running the map
   const relinkComp = (key, link) => { writeLink(pid, key, link); setAligned((a) => (a ? relinkComponent(a, key, link) : a)); };
+  const relinkFormTo = (key, link) => { writeLink(pid, key, link, FORM_LINKS_KEY); setAligned((a) => (a ? relinkForm(a, key, link) : a)); };
   useAutoStart(props, ready && !aligned && !(aligning && aligning.running), () => start(true));
   const segReport = useMemo(() => (aligned && aligned.report.segs ? new Map(aligned.report.segs.map((r) => [r.key, r])) : null), [aligned]);
   const compReport = useMemo(() => (aligned && aligned.report.comps ? new Map(aligned.report.comps.map((r) => [r.key, r])) : null), [aligned]);
+  const formReport = useMemo(() => (aligned && aligned.report.forms ? new Map(aligned.report.forms.map((r) => [r.key, r])) : null), [aligned]);
   useToolMeta("ma", { entered: !!aligned, status: aligned ? `Comparing · ${CHANNELS[aligned.channel].label}` : ready ? "Ready" : null, reset: () => { setAligned(null); setAligning(null); } });
   if (!aligned) {
     return (
@@ -124,7 +132,8 @@ export function CompareMA(props) {
   }
   return (
     <Shell {...shellOf(props, TOOLS.ma.menu(labels), { ico: "❖", title: "Compare", sub: "Monolith → micro app" }, `${CHANNELS[aligned.channel].label} · ${aligned.picked[2].microApps} ${labels[2]} projects`)}>
-      <VisualizerWorkspace key={labels.join("|") + ver} tool="ma" picked={aligned.picked} labels={labels} segReport={segReport} compReport={compReport} relinkComp={relinkComp} {...props}
+      <VisualizerWorkspace key={labels.join("|") + ver} tool="ma" picked={aligned.picked} labels={labels} segReport={segReport} compReport={compReport} relinkComp={relinkComp}
+        formReport={formReport} relinkForm={relinkFormTo} {...props}
         home={<MicroAppMap aligned={aligned} goto={props.setNav} labels={labels} />} />
     </Shell>
   );
@@ -134,8 +143,9 @@ const shellOf = (p, menu, head, foot) => ({ side: p.side, nav: p.nav, setNav: p.
 
 /* ================================================================ the comparison workspace */
 // Match files across the three versions by key, then extract + compare each (shared by CtrlSync and MVC Bridge).
-async function analyzeSets(maps, extractor, meta, onProgress, labels) {
-  const keys = [...new Set(maps.flatMap((m) => [...m.keys()]))].sort();
+// only: compare just these keys (after a form re-link)
+async function analyzeSets(maps, extractor, meta, onProgress, labels, only = null) {
+  const keys = only || [...new Set(maps.flatMap((m) => [...m.keys()]))].sort();
   onProgress({ done: 0, total: keys.length, running: true });
   const results = new Array(keys.length);
   let done = 0;
@@ -163,8 +173,13 @@ async function analyzeSets(maps, extractor, meta, onProgress, labels) {
 const KEY_OF = { controllers: (r) => r.path, mvc: (r) => r.path, comps: (r) => r.key, segs: (r) => r.key };
 const fileName = (k) => k.split("/").pop().replace(/\.(sm|js)$/i, "");
 
-function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem, active, home, segReport, compReport, relinkComp }) {
+function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem, active, home, segReport, compReport, relinkComp, formReport, relinkForm }) {
   const [bulk, setBulk] = useState(null);
+  const [formBulk, setFormBulk] = useState(null); // FormForge with three versions: every form's retrofit analysis
+  const [formAnalyzing, setFormAnalyzing] = useState(null);
+  const [formRules, setFormRules] = useState(readRules);
+  useEffect(() => { try { localStorage.setItem(RULES_KEY, JSON.stringify(formRules)); } catch { /* kept for this session only */ } }, [formRules]);
+  const threeWay = !!picked[2];
   const [analyzing, setAnalyzing] = useState(null);
   const [formScan, setFormScan] = useState({}); // per version-pair form property scan (kept across menu navigation)
   const [mvcBulk, setMvcBulk] = useState(null);
@@ -263,11 +278,54 @@ function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem,
     });
   }, [picked]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // forms (three versions): every form compared, triaged and its Move-to-R26 rows counted
+  const runForms = () => foreground("FormForge · compare forms across the three versions", async () => {
+    const results = await analyzeForms(picked, shown, setFormAnalyzing, { report: formReport });
+    setFormBulk({ results });
+  });
+  // a form re-linked by hand: compare it again, list the R26 form it let go of as R26-only (and drop the one it took),
+  // and compare its controller again in CtrlSync
+  const pendingForms = useRef(new Set());
+  const relinkF = relinkForm ? (key, link) => { pendingForms.current.add(key); relinkForm(key, link); } : null;
+  useEffect(() => {
+    if (!pendingForms.current.size) return;
+    const keys = [...pendingForms.current];
+    pendingForms.current.clear();
+    if (ran.current.has("forms")) {
+      foreground("FormForge · compare the re-linked form", async () => {
+        const now = new Set(picked.flatMap((p) => (p && p.forms ? [...p.forms.keys()] : [])));
+        const have = new Set(formBulk ? formBulk.results.map((r) => r.key) : []);
+        const redo = [...new Set([...keys, ...[...now].filter((k) => !have.has(k))])];
+        const res = await analyzeForms(picked, shown, () => {}, { keys: redo, report: formReport });
+        const by = new Map(res.map((r) => [r.key, r]));
+        setFormBulk((b) => {
+          if (!b) return b;
+          const kept = b.results.filter((r) => now.has(r.key)).map((r) => by.get(r.key) || r);
+          const added = res.filter((r) => !have.has(r.key));
+          return { results: [...kept, ...added] };
+        });
+      });
+    }
+    if (ran.current.has("controllers")) {
+      foreground("CtrlSync · compare the re-linked form's controller", async () => {
+        const ck = keys.map((k) => { const s = k.split("/"); const n = s.pop().replace(/\.sm$/i, ""); return [...s, `${n}Controller`, `${n}Controller.js`].join("/"); });
+        const maps = picked.map((p) => (p ? p.controllers : new Map()));
+        const now = new Set(maps.flatMap((m) => [...m.keys()]));
+        const have = new Set(bulk ? bulk.results.map((r) => r.path) : []);
+        const redo = [...new Set([...ck.filter((k) => now.has(k)), ...[...now].filter((k) => !have.has(k))])];
+        const res = await analyzeSets(maps, extractComponent, (k) => ({ base: k.split("/").pop().replace(/\.js$/, "") }), () => {}, labels, redo);
+        const by = new Map(res.map((r) => [r.path, r]));
+        setBulk((b) => (b ? { ...b, results: [...b.results.filter((r) => now.has(r.path)).map((r) => by.get(r.path) || r), ...res.filter((r) => !have.has(r.path))] } : b));
+      });
+    }
+  }, [picked]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // run an analysis the first time its view is opened (once each, whatever re-runs the effect)
   const ran = useRef(new Set());
   const first = (name, run) => { if (!ran.current.has(name)) { ran.current.add(name); run(); } };
   useEffect(() => {
     if (!active) return;
+    if (nav === "forms" && threeWay) first("forms", runForms);
     if (nav === "controllers") first("controllers", runControllers);
     if (nav === "mvc") first("mvc", runMvc);
     if (nav === "comps") first("comps", runComps);
@@ -295,7 +353,12 @@ function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem,
   return (
     <>
       {nav === "home" && home}
-      {nav === "forms" && <FormsView picked={picked} labels={labels} scan={formScan} setScan={setFormScan} open={item} setOpen={setItem} />}
+      {nav === "forms" && (threeWay
+        ? <FormsRetroView picked={picked} labels={shown} bulk={formBulk} analyzing={formAnalyzing} item={item} setItem={setItem}
+          report={formReport || null} relink={relinkF} rules={formRules} setRules={setFormRules} overall={overall} setOverall={setOverall}
+          renderReport={(model) => <Report model={model} {...reportProps} />} />
+        : <FormsView picked={picked} labels={labels} scan={formScan} setScan={setFormScan} open={item} setOpen={setItem} />)}
+      {nav === "forms-pair" && <FormsView picked={picked} labels={labels} scan={formScan} setScan={setFormScan} open={item} setOpen={setItem} />}
       {nav === "forms-all" && <OverallView key="forms" cat="forms" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
       {nav === "controllers-all" && <OverallView key="controllers" cat="controllers" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}
       {nav === "mvc-all" && <OverallView key="mvc" cat="mvc" picked={picked} labels={labels} cache={overall} setCache={setOverall} />}

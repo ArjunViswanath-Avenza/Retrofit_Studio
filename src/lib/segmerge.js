@@ -25,7 +25,7 @@ const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)
 const parentOf = (w) => (w && w.parent != null ? w.parent : null);
 const isDunder = (k) => k.length > 4 && k.startsWith("__") && k.endsWith("__");
 
-export const DESIGN_KEYS = new Set(["context", "breakpointInfo", "currentBreakpoint", "prevDevice", "prevPlatform", "device", "platform", "initdone", "addWidgetsdone", "allboxes", "areflexpropsreferenced", "isdatareferenced", "snapgridsize", "snaptogrid", "canvasWidth", "iscustomlayout", "currentLocale", "containerId", "DNDConfig", "_children_", "pf", "masterType", "shellCSS", "kuid"]);
+export const DESIGN_KEYS = new Set(["context", "breakpointInfo", "currentBreakpoint", "prevDevice", "prevPlatform", "device", "platform", "initdone", "addWidgetsdone", "allboxes", "areflexpropsreferenced", "isdatareferenced", "snapgridsize", "snaptogrid", "canvasWidth", "iscustomlayout", "currentLocale", "containerId", "DNDConfig", "_children_", "pf", "masterType", "shellCSS", "kuid", "_pxMenuIndex"]);
 export const isDesignKey = (k) => DESIGN_KEYS.has(k);
 
 // one row per changed leaf of an object-valued property; [{ path: [] }] = the property as a whole
@@ -148,6 +148,17 @@ export function mergeRows(W0, W1, W2) {
 }
 const sameWidget = (a, b) => !changedWidget(a, b);
 const stateOf = (v0, v1, v2) => (sameValue(v2, v0) ? "clean" : sameValue(v2, v1) ? "already" : "conflict");
+
+// what a conflict is about, to decide many at once: a property, or one value of it (responsiveData › skin); other kinds
+// by kind ("(add)", "(parent)" …). The breakpoint a responsiveData value belongs to (b1 … b4), else null.
+export const aboutOf = (r) => (r.kind !== "prop" ? `(${r.kind})` : r.path && r.path.length ? `${r.key} › ${leafName(r)}` : r.key);
+export const breakpointOf = (r) => (r.kind === "prop" && r.key === "responsiveData" && r.path && /^b\d+$/.test(r.path[0]) ? r.path[0] : null);
+// conflict rules kept for every form: [{ by: "about" | "bp", k, choice: "kbz" | "r26" }]; a later rule wins over an earlier one
+export function ruleChoice(r, rules) {
+  let c = null;
+  for (const x of rules || []) if ((x.by === "about" && aboutOf(r) === x.k) || (x.by === "bp" && breakpointOf(r) === x.k)) c = x.choice;
+  return c;
+}
 
 // the choice a row starts with
 export const defaultChoice = (r) => (r.design ? "r26" : r.state === "clean" ? "kbz" : r.state === "removal" ? "r26" : r.state === "already" ? "r26" : null);

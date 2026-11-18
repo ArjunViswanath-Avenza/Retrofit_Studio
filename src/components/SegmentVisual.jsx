@@ -3,7 +3,7 @@
 // added / removed / changed / moved widget outlined (same widget diff as the Structure tab), with a clickable list.
 // Nothing is drawn until a template's Visual tab is opened.
 import { useState, useEffect, useMemo, useRef } from "react";
-import { renderTemplate } from "../lib/preview";
+import { renderTemplate, renderForm } from "../lib/preview";
 import { templateIndex } from "../lib/visual";
 import { readWidgetJson } from "../lib/components";
 import { buildFormDiff, withoutKeys } from "../lib/forms";
@@ -11,6 +11,7 @@ import { widgetRefs } from "../lib/segments";
 
 const PAIRS = [[0, 1], [0, 2], [1, 2]];
 const WIDTHS = [[375, "Mobile 375"], [768, "Tablet 768"], [1024, "1024"], [1366, "Desktop 1366"]];
+const FORM_H = 900; // a whole form is drawn in a screen this tall (it scrolls inside)
 const MARK = { added: "add", removed: "del", modified: "chg", moved: "mov" };
 const SIGN = { add: "+", del: "−", chg: "~", mov: "↔" };
 const HL_CSS = `
@@ -41,11 +42,12 @@ export function SegmentVisual(props) {
   return <ItemVisual {...props} adapter={adapter} />;
 }
 
-// one item (segment template / component) drawn per version, with the change highlight and the widget side panel.
+// one item (segment template / component / form) drawn per version, with the change highlight and the widget side panel.
 // adapter: { noun, copyOf(i) -> {app, name} | null, filesOf(i) -> Map(id -> File), indexOf(i) -> preview index,
-//            refs(i, id, uses) -> reference groups, usesOf(i) -> usage entries, usageReady }
+//            refs(i, id, uses) -> reference groups, usesOf(i) -> usage entries, usageReady,
+//            render: "form" (a whole form, drawn as a screen) | undefined (a row / component) }
 export function ItemVisual({ adapter: A, r, labels, excludeKeys }) {
-  const [width, setWidth] = useState(1024);
+  const [width, setWidth] = useState(A.render === "form" ? 1366 : 1024);
   const [showHidden, setShowHidden] = useState(false);
   const [hl, setHl] = useState(false);
   const [pairIdx, setPairIdx] = useState(0);
@@ -154,10 +156,12 @@ function Pane({ i, label, r, A, W, loading, width, showHidden, marks, focus, sel
       try {
         const idx = A.indexOf(i);
         const doc = frame.current.contentDocument;
-        const out = await renderTemplate(idx, new Map(Object.entries(W)), doc, { width, showHidden, extraCss: HL_CSS });
+        const isForm = A.render === "form";
+        const out = isForm ? await renderForm(idx, new Map(Object.entries(W)), doc, { width, height: FORM_H, showHidden, extraCss: HL_CSS })
+          : await renderTemplate(idx, new Map(Object.entries(W)), doc, { width, showHidden, extraCss: HL_CSS });
         if (!alive) return;
         res.current = out;
-        setH(out ? out.height : 40);
+        setH(out ? (isForm ? FORM_H : out.height) : 40);
         doc.body.addEventListener("click", (e) => { const w = e.target.closest(".kw"); if (w) { const id = w.dataset.path.split(".").pop(); onPick(id); } });
         const hid = new Set();
         if (out) for (const [id, n] of out.byId) if (!n.p.isVisible || (n.el && n.el.closest && n.el.closest("[style*='display: none']"))) hid.add(id);
@@ -203,6 +207,10 @@ function Pane({ i, label, r, A, W, loading, width, showHidden, marks, focus, sel
     if (!n || !n.el) return;
     void n.el.offsetWidth;
     n.el.classList.add("hl-focus");
+    if (A.render === "form" && out.formEl) { // a form scrolls inside its screen: bring the widget into it first
+      const er = n.el.getBoundingClientRect(), sr = out.formEl.getBoundingClientRect();
+      if (er.top < sr.top || er.bottom > sr.bottom) out.formEl.scrollTop += er.top - sr.top - sr.height / 3;
+    }
     const rect = n.el.getBoundingClientRect(), fr = frame.current.getBoundingClientRect(), s = scale;
     const y = fr.top + rect.top * s;
     if (y < 80 || y > window.innerHeight - 80) window.scrollBy({ top: y - window.innerHeight / 3, behavior: "smooth" });

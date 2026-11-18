@@ -22,6 +22,10 @@
 .mg-bk.open{border-color:var(--del-mark)}
 .mg-bk button{border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:1px 7px;font-size:11px;cursor:pointer}
 .mg-bk button:hover{border-color:var(--accent);color:var(--accent)}
+.mg-bk.bp{border-style:dashed}
+.mg-rule{display:inline-flex;gap:3px;align-items:center;margin-left:4px;padding-left:6px;border-left:1px solid var(--line);font-size:10.5px;color:var(--muted)}
+.mg-rule.on{color:var(--accent);font-weight:700}
+.mg-rules{padding:4px 12px 8px;border-bottom:1px solid var(--line)}
 .mg-list{flex:1;overflow:auto;padding:4px 8px 12px}
 .mg-w{border:1px solid var(--line);border-radius:10px;margin:8px 0;background:var(--panel);overflow:hidden}
 .mg-w.sel{border-color:var(--accent)}

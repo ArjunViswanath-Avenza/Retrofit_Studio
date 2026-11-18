@@ -9,10 +9,10 @@
 // CardsManager) and user-widget namespaces move to com.InfinityOLB.<MA>.<name> / com.InfinityMB.<MA>.<name>.
 //
 // Matching, per artifact:
-//   forms        same channel + same form name across all micro apps; several candidates -> the one whose
-//                widget-id set is most similar to the monolith form (ties: module affinity)
-//   controllers  form controllers follow their form's micro app; otherwise same channel + name; several ->
-//                most similar text
+//   forms        same channel + name and the root widget's kuid (see "forms" below); several candidates -> the one
+//                whose widget-id set is most similar to the monolith form (ties: module affinity)
+//   controllers  form controllers follow their form (the controller beside the R26 form it matched, even when that
+//                form has another name); otherwise same channel + name; several -> most similar text
 //   mvc          presentation / business controllers -> the R26 controller file with the most similar set of
 //                member (method) names, preferring the UIModules the module's forms moved to
 //   user widgets root widget kuid, else same class name (last namespace segment); several -> most similar widget-id set
@@ -81,6 +81,7 @@ const jaccard = (a, b) => {
   for (const x of a) if (b.has(x)) i++;
   return i / (a.size + b.size - i);
 };
+const pct = (x) => `${Math.round(x * 100)}%`;
 const lineSet = (t) => new Set(t.replace(/\r\n?/g, "\n").split("\n").map((l) => l.trim()).filter((l) => l.length > 2));
 const memberSet = (t) => new Set([...t.matchAll(/([A-Za-z_$][\w$]*)\s*[:=]\s*(?:async\s+)?function\b/g)].map((m) => m[1]));
 const textCache = new WeakMap();
@@ -176,10 +177,110 @@ export function relinkComponent(aligned, key, link) {
   return { ...aligned, picked: [aligned.picked[0], aligned.picked[1], next], report: { ...aligned.report, comps } };
 }
 
+// ---------------------------------------------------------------- forms: identity
+// a form's root widget is the file named after the form (the Form itself, no parent); its kuid survives copies and
+// R26's re-makes (frmLogin -> frmLoginOlb)
+export async function formRootKuid(map, name) {
+  const f = map && map.get(name);
+  if (!f) return null;
+  try { const j = JSON.parse((await textOf(f)).replace(/^﻿/, "")); return j.kuid || null; } catch { return null; }
+}
+// every R26 form of the channel: { app, key, ch, module, name, map, ids, kuid }
+function formCatalog(apps, C) {
+  const list = [];
+  for (const a of apps) for (const [k, m] of a.scan.forms) {
+    const p = parseFormKey(k);
+    if (!C.r26.includes(p.ch)) continue;
+    list.push({ app: a.name, key: k, ch: p.ch, module: p.module, name: p.name, map: m, ids: new Set(m.keys()), kuid: null });
+  }
+  list.byLoc = new Map(list.map((c) => [`${c.app}/${c.key}`, c]));
+  return list;
+}
+// the key an R26 form no monolith form claims is listed under
+const r26OnlyFormKey = (c) => `${c.ch}/${c.app}·${c.module}/${c.name}.sm`;
+const formCopies = (scored) => scored.map((x) => ({ app: x.c.app, key: x.c.key, module: x.c.module, name: x.c.name, score: x.score, kuid: x.c.kuid || null }));
+const FORM_AUTO = ["status", "link", "method", "copies", "suggestions"];
+const autoOfForm = (row) => Object.fromEntries(FORM_AUTO.map((f) => [f, row[f]]));
+// a manual form link on top of the automatic match: {app, key} -> that form, "none" -> no R26 counterpart, null -> automatic
+function applyFormLink(row, link, catalog) {
+  Object.assign(row, row.auto);
+  row.manual = null;
+  row.linkMissing = undefined;
+  if (link == null) return;
+  if (link === "none") { Object.assign(row, { status: "none", link: "manual-none", method: "set by you: no R26 counterpart", copies: [] }); row.manual = "none"; return; }
+  const c = catalog.byLoc.get(`${link.app}/${link.key}`);
+  if (!c) { row.linkMissing = link; return; } // the linked form is not in this R26 folder any more: automatic match kept
+  const mine = { app: c.app, key: c.key, module: c.module, name: c.name, score: jaccard(row.monoIds || new Set(), c.ids), kuid: c.kuid || null };
+  Object.assign(row, { status: "mapped", link: "manual", method: `set by you${c.name !== row.name ? ` · named ${c.name} in R26` : ""} · widget overlap ${pct(mine.score)}`, copies: [mine, ...(row.copies || []).filter((x) => !(x.app === c.app && x.key === c.key))] });
+  row.manual = { app: c.app, key: c.key };
+}
+function finishFormRow(row, aff) {
+  const best = row.copies && row.copies[0];
+  row.target = best && row.status !== "none" ? { app: best.app, module: best.module, key: best.key } : null;
+  row.overlap = best ? best.score : undefined;
+  row.alts = (row.copies || []).slice(1).map((c) => `${c.app}:${c.module}${c.name !== row.name ? `/${c.name}` : ""} (${pct(c.score || 0)})`);
+  row.confidence = FORM_CONFIDENCE[row.link] || "none";
+  row.suggest = undefined;
+  if (!row.target) { // where KBZ-only / unmatched forms would most likely live (module affinity)
+    const best2 = Object.entries((aff && aff[row.module]) || {}).sort((x, y) => y[1] - x[1])[0];
+    if (best2) row.suggest = best2[0];
+  }
+}
+const FORM_CONFIDENCE = { ...CONFIDENCE, check: "check" };
+// the R26 controller a form controller follows: the one beside the form it matched (named after that form)
+function followCtrl(ctrlIndex, ch, target) {
+  if (!target) return null;
+  const tName = target.key.split("/").pop().replace(/\.sm$/i, "");
+  return (ctrlIndex.get(`${ch}|${tName}Controller`) || []).find((c) => c.app === target.app && c.module === target.module) || null;
+}
+const ctrlKeyOfForm = (formKey) => { const s = formKey.split("/"); const n = s.pop().replace(/\.sm$/i, ""); return [...s, `${n}Controller`, `${n}Controller.js`].join("/"); };
+const r26OnlyCtrlKey = (c) => { const p = parseCtrlKey(c.key); return `${p.ch}/${c.app}·${p.module || "templates"}/${p.name}/${p.name}.js`; };
+
+// a manual form link set after the map was built: a new aligned result (R26 forms, the form's controller and their report
+// rows replaced; the R26 form / controller let go is listed as R26-only again)
+export function relinkForm(aligned, key, link) {
+  const r26 = aligned.picked[2];
+  const next = { ...r26, forms: new Map(r26.forms), formApp: new Map(r26.formApp), controllers: new Map(r26.controllers), ctrlApp: new Map(r26.ctrlApp) };
+  const cat = r26.formCatalog;
+  let ctrlRow = null;
+  const forms = aligned.report.forms.map((r) => {
+    if (r.key !== key) return r;
+    const row = { ...r };
+    const before = r.target ? cat.byLoc.get(`${r.target.app}/${r.target.key}`) : null;
+    applyFormLink(row, link, cat);
+    finishFormRow(row, aligned.report.affinity);
+    const after = row.target ? cat.byLoc.get(`${row.target.app}/${row.target.key}`) : null;
+    if (before !== after) {
+      if (before) { next.forms.set(r26OnlyFormKey(before), before.map); next.formApp.set(r26OnlyFormKey(before), before.app); }
+      if (after) { next.forms.delete(r26OnlyFormKey(after)); next.formApp.delete(r26OnlyFormKey(after)); next.forms.set(key, after.map); next.formApp.set(key, after.app); } else { next.forms.delete(key); next.formApp.delete(key); }
+    }
+    ctrlRow = row;
+    return row;
+  });
+  // the form's controller follows it
+  let controllers = aligned.report.controllers;
+  const ck = ctrlKeyOfForm(key);
+  const idx = r26.ctrlIndex;
+  if (ctrlRow && idx) {
+    controllers = controllers.map((r) => {
+      if (r.key !== ck) return r;
+      const fc = followCtrl(idx, ctrlRow.channel, ctrlRow.target);
+      if (!fc) return r; // no controller beside the new form: the controller keeps its own match
+      const row = { ...r, status: "mapped", method: `follows its form${fc.key.split("/").pop() !== r.name + ".js" ? ` · ${fc.key.split("/").pop().replace(/\.js$/, "")}` : ""}`, target: { app: fc.app, module: fc.module, key: fc.key }, alts: [] };
+      const was = r.target ? (idx.get(`${ctrlRow.channel}|${r.target.key.split("/").pop().replace(/\.js$/, "")}`) || []).find((c) => c.app === r.target.app && c.key === r.target.key) : null;
+      if (was && was !== fc) { next.controllers.set(r26OnlyCtrlKey(was), was.f); next.ctrlApp.set(r26OnlyCtrlKey(was), was.app); }
+      next.controllers.delete(r26OnlyCtrlKey(fc)); next.ctrlApp.delete(r26OnlyCtrlKey(fc));
+      next.controllers.set(ck, fc.f); next.ctrlApp.set(ck, fc.app);
+      return row;
+    });
+  }
+  return { ...aligned, picked: [aligned.picked[0], aligned.picked[1], next], report: { ...aligned.report, forms, controllers } };
+}
+
 // ---------------------------------------------------------------- alignment
 // mono: [R21 scan, KBZ scan] (already channel-filtered); ma: scanMicroApps result; channel: "web" | "mobile"
-// links: manual user-widget links, { monolith key: {app, key} | "none" }
-export async function alignMicroApps(mono, ma, channel, onProgress = () => {}, links = null) {
+// links: manual user-widget links, { monolith key: {app, key} | "none" }; formLinks: the same for forms
+export async function alignMicroApps(mono, ma, channel, onProgress = () => {}, links = null, formLinks = null) {
   const C = CHANNELS[channel];
   const apps = [...ma.apps.values()];
   const report = { channel, forms: [], controllers: [], mvc: [], comps: [], segs: [], affinity: {} };
@@ -192,14 +293,25 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}, l
   const loc = (app, key) => `${app}/${key}`;
 
   // ---- forms
+  // Rules (measured on KBZ R21 → R26 web: every form's root widget has a kuid, R21 and KBZ share it on 369 of 370; no form
+  // was renamed, but R26 re-made frmLogin / frmLogout as new shells and kept the old ones as frmLoginOlb / frmLogoutOlb with
+  // the old kuid, and some copies keep the kuid of the form they were copied from — frmApprovalViewDetails has
+  // frmACHDashboard's):
+  //   name + kuid agree   -> proven
+  //   only a kuid match   -> proven (renamed in R26)
+  //   they disagree       -> the one sharing more widget ids, flagged "check"; the other listed beside it
+  //   only the name       -> likely (>= 30% of the widget ids shared) or weak; several -> most similar widget-id set
+  //   neither             -> forms sharing >= 60% of the widget ids, as suggestions only (nothing compared until linked)
+  // A manual link (formLinks[key] = {app, key} | "none") replaces the automatic result; row.auto keeps the automatic one.
   onProgress({ step: "Matching forms", running: true });
-  const r26Forms = new Map(); // ch|name -> [{app, key, module, map}]
-  for (const a of apps) for (const [k, m] of a.scan.forms) {
-    const p = parseFormKey(k);
-    if (!C.r26.includes(p.ch)) continue;
-    const id = `${p.ch}|${p.name}`;
+  const fcat = formCatalog(apps, C);
+  await pool(fcat.length, 16, async (i) => { fcat[i].kuid = await formRootKuid(fcat[i].map, fcat[i].name); });
+  const r26Forms = new Map(), r26FormKuid = new Map(); // ch|name -> [copy] ; kuid -> [copy]
+  for (const c of fcat) {
+    const id = `${c.ch}|${c.name}`;
     if (!r26Forms.has(id)) r26Forms.set(id, []);
-    r26Forms.get(id).push({ app: a.name, key: k, module: p.module, map: m });
+    r26Forms.get(id).push(c);
+    if (c.kuid) { if (!r26FormKuid.has(c.kuid)) r26FormKuid.set(c.kuid, []); r26FormKuid.get(c.kuid).push(c); }
   }
   const monoFormKeys = [...new Set(mono.flatMap((s) => (s ? [...s.forms.keys()] : [])))].sort();
   const aff = {}; // monolith module -> { "MA:module": n } from unique matches
@@ -208,35 +320,54 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}, l
     if (c.length === 1) { const t = `${c[0].app}:${c[0].module}`; (aff[p.module] = aff[p.module] || {})[t] = (aff[p.module][t] || 0) + 1; }
   }
   report.affinity = aff;
+  out.formCatalog = fcat;
   for (const k of monoFormKeys) {
     const p = parseFormKey(k);
-    const row = { key: k, name: p.name, channel: p.ch, module: p.module, present: inSide("forms", k), status: "none", method: "", target: null, alts: [] };
+    const row = { key: k, name: p.name, channel: p.ch, module: p.module, present: inSide("forms", k), status: "none", method: "", target: null, alts: [], copies: [] };
     if (!C.r26.includes(p.ch)) { row.status = "tablet"; row.method = `${p.ch} form — the micro apps have no ${p.ch} forms`; report.forms.push(row); continue; }
-    const cands = r26Forms.get(`${p.ch}|${p.name}`) || [];
-    if (cands.length === 1) {
-      const ov = jaccard(new Set(ref("forms", k).keys()), new Set(cands[0].map.keys()));
-      Object.assign(row, { status: "mapped", method: `unique name · widget overlap ${Math.round(ov * 100)}%`, target: cands[0], overlap: ov });
-    } else if (cands.length > 1) {
-      const ids = new Set(ref("forms", k).keys());
-      const scored = cands.map((c) => ({ ...c, score: jaccard(ids, new Set(c.map.keys())), aff: (aff[p.module] || {})[`${c.app}:${c.module}`] || 0 }))
-        .sort((x, y) => y.score - x.score || y.aff - x.aff);
-      const best = scored[0];
-      const clear = scored.length < 2 || best.score - scored[1].score >= 0.05 || best.aff > scored[1].aff;
-      Object.assign(row, { status: clear ? "mapped" : "ambiguous", method: `${cands.length} candidates — widget overlap ${Math.round(best.score * 100)}%${best.aff ? `, module affinity ${best.aff}` : ""}`, target: best, alts: scored.slice(1).map((c) => `${c.app}:${c.module} (${Math.round(c.score * 100)}%)`) });
-      if (!clear) row.target = best; // still compared, flagged for review
+    const m0 = ref("forms", k);
+    const ids = new Set(m0.keys());
+    row.monoIds = ids;
+    row.widgets = ids.size;
+    row.kuid = (mono[1] && (await formRootKuid(mono[1].forms.get(k), p.name))) || (mono[0] && (await formRootKuid(mono[0].forms.get(k), p.name))) || null;
+    const score = (list) => list.map((c) => ({ c, score: jaccard(ids, c.ids), aff: (aff[p.module] || {})[`${c.app}:${c.module}`] || 0 }))
+      .sort((x, y) => y.score - x.score || y.aff - x.aff || x.c.app.localeCompare(y.c.app));
+    const viaName = score(r26Forms.get(`${p.ch}|${p.name}`) || []);
+    const viaKuid = row.kuid ? score(r26FormKuid.get(row.kuid) || []) : [];
+    const both = (list) => { const seen = new Set(); return list.filter((x) => { const l = loc(x.c.app, x.c.key); if (seen.has(l)) return false; seen.add(l); return true; }); };
+    const nameWithKuid = viaName.filter((x) => row.kuid && x.c.kuid === row.kuid);
+    if (nameWithKuid.length) {
+      const best = nameWithKuid[0];
+      Object.assign(row, { status: "mapped", link: "kuid", method: `same name and root widget kuid${viaName.length > 1 ? ` · ${viaName.length} forms with this name` : ""} · widget overlap ${pct(best.score)}`, copies: formCopies(both([best, ...viaName, ...viaKuid])) });
+    } else if (viaKuid.length && viaName.length) {
+      const k0 = viaKuid[0], n0 = viaName[0];
+      const pickK = k0.score > n0.score;
+      const best = pickK ? k0 : n0, other = pickK ? n0 : k0;
+      Object.assign(row, { status: "mapped", link: "check", method: `name and root widget kuid point to different R26 forms — ${best.c.name} (${pickK ? "same kuid" : "same name"}, ${pct(best.score)} of the widgets) chosen over ${other.c.name} in ${other.c.app} (${pickK ? "same name" : "same kuid"}, ${pct(other.score)})`, copies: formCopies(both([best, other, ...viaName, ...viaKuid])) });
+    } else if (viaKuid.length) {
+      const best = viaKuid[0];
+      Object.assign(row, { status: "mapped", link: "kuid", method: `root widget kuid${best.c.name !== p.name ? ` · named ${best.c.name} in R26` : ""}${viaKuid.length > 1 ? ` · ${viaKuid.length} forms with this kuid` : ""} · widget overlap ${pct(best.score)}`, copies: formCopies(viaKuid) });
+    } else if (viaName.length) {
+      const best = viaName[0];
+      const clear = viaName.length < 2 || best.score - viaName[1].score >= 0.05 || best.aff > viaName[1].aff;
+      Object.assign(row, { status: clear ? "mapped" : "ambiguous", link: best.score >= 0.3 ? "name" : "name-weak", method: viaName.length === 1 ? `unique name, no kuid match · widget overlap ${pct(best.score)}` : `${viaName.length} candidates — widget overlap ${pct(best.score)}${best.aff ? `, module affinity ${best.aff}` : ""}`, copies: formCopies(viaName) });
+    } else {
+      const sc = ids.size >= 5 ? score(fcat.filter((c) => c.ids.size >= 5)).filter((x) => x.score >= 0.6).slice(0, 3) : [];
+      Object.assign(row, { link: sc.length ? "suggested" : "none", suggestions: formCopies(sc), method: sc.length ? `no name or kuid match · ${sc[0].c.name} in ${sc[0].c.app} shares ${pct(sc[0].score)} of the widgets — link it if it is the same form` : "no form with its name, its root kuid or ≥ 60% of its widgets in any micro app" });
     }
-    if (row.target) { out.forms.set(k, row.target.map); out.formApp.set(k, row.target.app); claimed.forms.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.module, key: row.target.key }; }
-    else { // where KBZ-only / unmatched forms would most likely live (module affinity)
-      const best = Object.entries(aff[p.module] || {}).sort((x, y) => y[1] - x[1])[0];
-      if (best) row.suggest = best[0];
+    row.auto = autoOfForm(row);
+    if (formLinks && formLinks[k] !== undefined) applyFormLink(row, formLinks[k], fcat);
+    finishFormRow(row, aff);
+    if (row.target) {
+      const c = fcat.byLoc.get(loc(row.target.app, row.target.key));
+      out.forms.set(k, c.map); out.formApp.set(k, c.app); claimed.forms.add(loc(c.app, c.key));
     }
     report.forms.push(row);
   }
-  for (const a of apps) for (const [k, m] of a.scan.forms) {
-    const p = parseFormKey(k);
-    if (!C.r26.includes(p.ch) || claimed.forms.has(loc(a.name, k))) continue;
-    out.forms.set(`${p.ch}/${a.name}·${p.module}/${p.name}.sm`, m);
-    out.formApp.set(`${p.ch}/${a.name}·${p.module}/${p.name}.sm`, a.name);
+  for (const c of fcat) {
+    if (claimed.forms.has(loc(c.app, c.key))) continue;
+    out.forms.set(r26OnlyFormKey(c), c.map);
+    out.formApp.set(r26OnlyFormKey(c), c.app);
   }
 
   // ---- controllers
@@ -257,8 +388,8 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}, l
     if (!C.r26.includes(p.ch)) { row.status = "tablet"; row.method = `${p.ch} controller — the micro apps have no ${p.ch} forms`; report.controllers.push(row); continue; }
     const cands = r26Ctrl.get(`${p.ch}|${p.name}`) || [];
     const ft = p.module && formTarget.get(`${p.ch}|${p.module}|${p.name.replace(/Controller$/, "")}`);
-    const follow = ft && cands.find((c) => c.app === ft.app && c.module === ft.module);
-    if (follow) Object.assign(row, { status: "mapped", method: "follows its form", target: follow });
+    const follow = followCtrl(r26Ctrl, p.ch, ft); // the controller beside the R26 form it matched (frmLogin -> frmLoginOlbController)
+    if (follow) Object.assign(row, { status: "mapped", method: `follows its form${follow.key.split("/").pop() !== p.name + ".js" ? ` · ${follow.key.split("/").pop().replace(/\.js$/, "")}` : ""}`, target: follow });
     else if (cands.length === 1) Object.assign(row, { status: "mapped", method: "unique name", target: cands[0] });
     else if (cands.length > 1) {
       const lines = lineSet(await textOf(ref("controllers", k)));
@@ -272,6 +403,7 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}, l
     if (row.target) { out.controllers.set(k, row.target.f); out.ctrlApp.set(k, row.target.app); claimed.controllers.add(loc(row.target.app, row.target.key)); row.target = { app: row.target.app, module: row.target.module, key: row.target.key }; }
     report.controllers.push(row);
   }
+  out.ctrlIndex = r26Ctrl; // kept for re-links (a form's controller follows it)
   for (const a of apps) for (const [k, f] of a.scan.controllers) {
     const p = parseCtrlKey(k);
     if (!C.r26.includes(p.ch) || claimed.controllers.has(loc(a.name, k))) continue;
@@ -301,7 +433,6 @@ export async function alignMicroApps(mono, ma, channel, onProgress = () => {}, l
     return mx === my ? x.localeCompare(y) : mx ? -1 : 1; // main controllers first, extensions follow them
   });
   const mvcModuleTarget = {}; // monolith "module|kind" -> {app, module} its main controller mapped to
-  const pct = (x) => `${Math.round(x * 100)}%`;
   for (const k of monoMvcKeys) {
     const s2 = k.split("/"), mod = s2[0], file = s2[s2.length - 1];
     const kind = /\/BusinessControllers\//.test(k) ? "B" : "P";

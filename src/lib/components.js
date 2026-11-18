@@ -176,7 +176,7 @@ export function renderStudioAction(id, a) {
   return { text: `function ${id}(${(params.length ? params : ["eventobject"]).join(", ")}) {\nvar self = this;\n${body.join("\n")}\n}`, exact };
 }
 // widget events of one component version: AS id -> "onClick defined for btnX"
-function eventsOf(W) {
+export function eventsOf(W) {
   const m = new Map();
   for (const [wid, w] of Object.entries(W)) for (const [k, v] of Object.entries(w || {})) if (/^ide_/.test(k) && typeof v === "string" && /^AS_\w+$/.test(v) && !m.has(v)) m.set(v, `${k.slice(4)} defined for ${wid}`);
   return m;
@@ -250,7 +250,7 @@ const STRUCT_PAIRS = [[0, 1], [0, 2], [1, 2]];
 
 // one version's actions: the Actions file's functions, plus every action a widget event names that the file lacks,
 // read from studioactions (see above). Returns { src, parsed, fromJson: [names], approx: [names] } or null.
-async function actionsVersion(file, events, idx) {
+export async function actionsVersion(file, events, idx) {
   const src = file ? norm(await file.text()) : "";
   const parsed = src ? extract(src) : { moduleName: null, members: {} };
   const fromJson = [], approx = [];

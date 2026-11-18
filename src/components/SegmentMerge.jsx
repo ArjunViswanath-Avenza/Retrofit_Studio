@@ -1,20 +1,21 @@
-// Move to R26 (TemplateTwin and COMP-are): KBZ's changes to one segment template or user widget, change by change,
-// onto its R26 copies.
+// Move to R26 (TemplateTwin, COMP-are and FormForge): KBZ's changes to one segment template, user widget or form,
+// change by change, onto its R26 copies.
 // R21 = base, KBZ = the customisation, R26 = target (lib/segmerge.js sorts every change: clean / already in R26 /
 // conflict / removal). Pick what moves, see KBZ · R26 now · the result drawn, then write the whole merged widget
 // folder for every ticked R26 copy into a separate output folder (server/output.js). Nothing is generated while a
 // conflict is undecided or an added widget has no parent.
 import { useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
-import { renderTemplate, previewAssets } from "../lib/preview";
+import { renderTemplate, renderForm, previewAssets } from "../lib/preview";
 import { versionIndex } from "../lib/visual";
 import { partsOf } from "../lib/components";
 import { looseJson } from "../lib/blueprint";
-import { mergeRows, defaultChoice, applyMerge, dependencyIssues, fileStyle, templateFiles, rowLabel, leafName } from "../lib/segmerge";
+import { mergeRows, defaultChoice, applyMerge, dependencyIssues, fileStyle, templateFiles, rowLabel, aboutOf, breakpointOf, ruleChoice } from "../lib/segmerge";
 import "./widgetdialog.css";
 import "./segmerge.css";
 
 const WIDTHS = [[768, "768"], [1024, "1024"], [1366, "1366"]];
+const FORM_H = 900; // a form is drawn as a screen this tall (it scrolls inside)
 const KIND = { prop: "property", add: "widget added", remove: "widget removed", parent: "new parent", order: "child order", gone: "R26 dropped it" };
 const STATE = { clean: "clean", already: "already in R26", conflict: "conflict", removal: "removal" };
 const HL = `
@@ -58,18 +59,40 @@ function i18nKeys(p) {
 // { noun, name, ch, baseFiles, kbzFiles: Map(id -> File), copies: [{ app, label, best, score, path (output folder),
 //   files() -> { map: Map(id -> File), other: [names of non-widget files] } }] }
 
-// one widget folder inside one R26 micro app: its widget files and anything else lying in it
+// one widget folder inside one R26 micro app: its widget files and anything else lying in it (a sub-folder as "name/")
 function folderFiles(p26, app, dir) {
   const map = new Map(), other = [];
-  for (const f of (p26.appFiles && p26.appFiles.get(app)) || []) {
+  for (const f of (p26.appFiles && p26.appFiles.get(app)) || p26.all || []) {
     const rel = (f.webkitRelativePath || "").replace(/\\/g, "/");
     const k = rel.indexOf(dir);
     if (k < 0) continue;
     const rest = rel.slice(k + dir.length);
-    if (rest.includes("/")) continue;
+    if (rest.includes("/")) { const d = rest.slice(0, rest.indexOf("/") + 1); if (!other.includes(d)) other.push(d); continue; }
     if (/\.json$/i.test(rest)) map.set(rest.slice(0, -5), f); else other.push(rest);
   }
   return { map, other };
+}
+// a form built on a form template keeps the widgets placed in the template in __<instance>__/ sub-folders: writing the
+// folder whole would drop them, so such an R26 form is not generated
+const templateDirs = (other) => (other || []).filter((x) => /^__.+__\/$/.test(x));
+
+// a form: the R26 form the micro-app map matched (x = its row), then the other candidates (same name elsewhere, same
+// root kuid). Written to <MA>/forms/<channel>/<R26 module>/<R26 name>.sm (monolith R26: forms/<channel>/<module>/…)
+export function formSource(r, picked, x) {
+  const p26 = picked[2];
+  const ch = r.key.split("/")[0];
+  const base = { noun: "form", render: "form", name: r.name, ch, baseFiles: picked[0] && picked[0].forms.get(r.key), kbzFiles: picked[1] && picked[1].forms.get(r.key), rules: true };
+  if (p26 && !p26.appFiles) { // R26 as a monolith: the same form key
+    return { ...base, copies: p26.forms && p26.forms.has(r.key) ? [{ app: "", label: r.name, best: true, path: `forms/${r.key}`, files: () => ({ ...folderFiles(p26, "", `/forms/${r.key}/`), map: p26.forms.get(r.key) }) }] : [] };
+  }
+  const list = x && x.copies && x.copies.length && x.target ? x.copies : [];
+  return {
+    ...base,
+    copies: list.map((c, i) => ({
+      app: c.app, label: c.name, best: i === 0, score: c.score, path: `${c.app}/forms/${c.key}`,
+      files: () => folderFiles(p26, c.app, `/forms/${c.key}/`),
+    })),
+  };
 }
 
 // a segment template: the R26 copy TemplateTwin compared, then every other copy
@@ -120,7 +143,9 @@ const firstTicked = (copies) => {
   return new Set(used.length ? used : [0]);
 };
 
-export function SegmentMerge({ source, picked, labels, onClose }) {
+// rules / setRules (forms): conflict decisions kept for every form ([{ by: "about" | "bp", k, choice }]) — applied to the
+// conflicts of every form opened, and set from the "every form" buttons
+export function SegmentMerge({ source, picked, labels, onClose, rules, setRules }) {
   const [O, C, N] = labels;
   const p26 = picked[2];
   const copies = source.copies;
@@ -138,6 +163,9 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
   const [width, setWidth] = useState(1024);
   const [out, setOut] = useState(() => { try { return localStorage.getItem(OUT_KEY) || ""; } catch { return ""; } });
   const [gen, setGen] = useState(null); // { running } | { done: [...], errors: [...] }
+  const rulesNow = useRef(rules || []);
+  rulesNow.current = rules || [];
+  const canRule = !!(source.rules && setRules);
 
   useEffect(() => { const k = (e) => { if (e.key === "Escape") onClose(); }; window.addEventListener("keydown", k); return () => window.removeEventListener("keydown", k); }, [onClose]);
   useEffect(() => {
@@ -163,7 +191,8 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
         const { W, raw } = await readSet(map);
         const rows = mergeRows(base.W0, base.W1, W);
         setData((d) => ({ ...d, [i]: { W2: W, raw2: raw, rows, style: fileStyle(Object.values(raw)[0]), other } }));
-        setChoices((s) => ({ ...s, [i]: Object.fromEntries(rows.map((row) => [row.rid, defaultChoice(row)])) }));
+        // conflicts a saved rule decides start decided
+        setChoices((s) => ({ ...s, [i]: Object.fromEntries(rows.map((row) => [row.rid, (row.state === "conflict" && !row.design && ruleChoice(row, rulesNow.current)) || defaultChoice(row)])) }));
         const [ra, keys] = await Promise.all([previewAssets(versionIndex(p26, c.app, source.ch)), i18nKeys(p26)]);
         setAssets((s) => ({ ...s, [i]: ra, i18n: keys }));
       })();
@@ -187,6 +216,8 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
     const d = data[i], c = choices[i];
     if (!d || !c) return ["still reading"];
     const out = [];
+    const tpl = templateDirs(d.other);
+    if (tpl.length) out.push(`built on a form template (${tpl.join(", ")}) — not supported yet`);
     const undecided = d.rows.filter((row) => row.state === "conflict" && !c[row.rid]).length;
     if (undecided) out.push(`${undecided} conflict${undecided === 1 ? "" : "s"} to decide`);
     const m = applyMerge(base.W1, d.W2, d.rows, c, parentFor[i] || {});
@@ -238,14 +269,26 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
     }
     return [...m];
   }, [D, show, showDesign, q]);
-  // conflicts by what they are about (a property, or one value of it: responsiveData › width), to decide many at once
+  // conflicts by what they are about (a property, or one value of it: responsiveData › width), and — for responsiveData —
+  // by breakpoint (b1 … b4), to decide many at once (here, or for every form with a saved rule)
   const conflictGroups = useMemo(() => {
     if (!D) return [];
     const m = new Map();
-    const about = (x) => (x.kind !== "prop" ? KIND[x.kind] : x.path && x.path.length ? `${x.key} › ${leafName(x)}` : x.key);
-    for (const row of D.rows) if (row.state === "conflict" && !row.design) { const k = about(row); if (!m.has(k)) m.set(k, { k, total: 0, open: 0, pred: (x) => x.state === "conflict" && !x.design && about(x) === k }); const g = m.get(k); g.total++; if (!ch[row.rid]) g.open++; }
-    return [...m.values()].sort((a, b) => b.total - a.total);
+    const add = (by, k, label, row) => { const id = by + "|" + k; if (!m.has(id)) m.set(id, { by, k, label, total: 0, open: 0, pred: (x) => x.state === "conflict" && !x.design && (by === "bp" ? breakpointOf(x) === k : aboutOf(x) === k) }); const g = m.get(id); g.total++; if (!ch[row.rid]) g.open++; };
+    for (const row of D.rows) if (row.state === "conflict" && !row.design) {
+      const a = aboutOf(row);
+      add("about", a, row.kind !== "prop" ? KIND[row.kind] : a, row);
+      const bp = breakpointOf(row);
+      if (bp) add("bp", bp, `responsiveData › ${bp} (every value at this breakpoint)`, row);
+    }
+    return [...m.values()].sort((a, b) => (a.by === b.by ? b.total - a.total : a.by === "about" ? -1 : 1));
   }, [D, ch]);
+  const ruleOf = (g) => (rules || []).find((x) => x.by === g.by && x.k === g.k);
+  // a rule for every form: kept (replacing an older one on the same thing) and applied to this form's conflicts now
+  const setRule = (g, choice) => {
+    setRules((rs) => [...(rs || []).filter((x) => !(x.by === g.by && x.k === g.k)), ...(choice ? [{ by: g.by, k: g.k, choice }] : [])]);
+    if (choice) setMany(g.pred, choice);
+  };
   const containers = useMemo(() => (merged ? Object.entries(merged.W).filter(([, w]) => Array.isArray(w.children) || /Flex|Form/.test(w.wType || "")).map(([id]) => id).sort() : []), [merged]);
   const toggleShow = (s) => setShow((v) => { const n = new Set(v); if (n.has(s)) n.delete(s); else n.add(s); return n; });
 
@@ -307,15 +350,22 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
                 </div>
                 {conflictGroups.length > 0 && (
                   <div className="mg-bulk">
-                    <span className="tag">Decide conflicts together:</span>
-                    {conflictGroups.map((g) => (
-                      <span key={g.k} className={"mg-bk" + (g.open ? " open" : "")}>
-                        <span className="mono">{g.k}</span> ×{g.total}{g.open ? ` (${g.open} open)` : ""}
-                        <button onClick={() => setMany(g.pred, "r26")}>keep {N}</button><button onClick={() => setMany(g.pred, "kbz")}>take {C}</button>
-                      </span>
-                    ))}
+                    <span className="tag">Decide conflicts together{canRule ? " — on this form, or for every form (a rule, kept and applied to every form you open)" : ""}:</span>
+                    {conflictGroups.map((g) => {
+                      const rule = canRule && ruleOf(g);
+                      return (
+                        <span key={g.by + g.k} className={"mg-bk" + (g.open ? " open" : "") + (g.by === "bp" ? " bp" : "")}>
+                          <span className="mono">{g.label}</span> ×{g.total}{g.open ? ` (${g.open} open)` : ""}
+                          <button onClick={() => setMany(g.pred, "r26")}>keep {N}</button><button onClick={() => setMany(g.pred, "kbz")}>take {C}</button>
+                          {canRule && (rule
+                            ? <span className="mg-rule on" title="a rule for every form">every form: {rule.choice === "kbz" ? `take ${C}` : `keep ${N}`} <button onClick={() => setRule(g, null)} title="remove the rule (choices made on this form stay)">✕</button></span>
+                            : <span className="mg-rule">every form: <button onClick={() => setRule(g, "r26")}>keep {N}</button><button onClick={() => setRule(g, "kbz")}>take {C}</button></span>)}
+                        </span>
+                      );
+                    })}
                   </div>
                 )}
+                {canRule && rules && rules.length > 0 && <div className="mg-rules tag">Rules for every form: {rules.map((x) => `${x.by === "bp" ? `responsiveData › ${x.k}` : KIND[x.k.slice(1, -1)] || x.k} → ${x.choice === "kbz" ? `take ${C}` : `keep ${N}`}`).join(" · ")} — a later rule wins where two apply.</div>}
                 <div className="mg-list">
                   {!groups.length && <p className="note" style={{ padding: 12 }}>{D.rows.length ? "No changes under these filters." : `${C} did not change this ${source.noun} compared with ${O} — nothing to move.`}</p>}
                   {groups.map(([wid, list]) => (
@@ -369,9 +419,9 @@ export function SegmentMerge({ source, picked, labels, onClose }) {
 
           <div className="mg-right">
             <div className="mg-panes">
-              <MergePane label={`${C} (customisation)`} p={picked[1]} app="" ch={source.ch} W={base && base.W1} width={width} sel={sel} onPick={setSel} />
-              <MergePane label={`${N} now${c && c.app ? ` · ${c.app}` : ""}`} p={p26} app={c && c.app} ch={source.ch} W={D && D.W2} width={width} sel={sel} marks={marks.now} onPick={setSel} />
-              <MergePane label={`Result${c && c.app ? ` · ${c.app}` : ""}`} p={p26} app={c && c.app} ch={source.ch} W={merged && merged.W} width={width} sel={sel} marks={marks.res} onPick={setSel} result />
+              <MergePane label={`${C} (customisation)`} p={picked[1]} app="" ch={source.ch} W={base && base.W1} width={width} sel={sel} onPick={setSel} render={source.render} />
+              <MergePane label={`${N} now${c && c.app ? ` · ${c.app}` : ""}`} p={p26} app={c && c.app} ch={source.ch} W={D && D.W2} width={width} sel={sel} marks={marks.now} onPick={setSel} render={source.render} />
+              <MergePane label={`Result${c && c.app ? ` · ${c.app}` : ""}`} p={p26} app={c && c.app} ch={source.ch} W={merged && merged.W} width={width} sel={sel} marks={marks.res} onPick={setSel} result render={source.render} />
             </div>
             {sel && D && (
               <div className="mg-detail">
@@ -421,7 +471,7 @@ function WidgetCompare({ ids, labels }) {
   );
 }
 
-function MergePane({ label, p, app, ch, W, width, sel, marks, onPick, result }) {
+function MergePane({ label, p, app, ch, W, width, sel, marks, onPick, result, render }) {
   const frame = useRef(null), box = useRef(null), res = useRef(null);
   const [h, setH] = useState(80);
   const [state, setState] = useState("drawing");
@@ -436,10 +486,10 @@ function MergePane({ label, p, app, ch, W, width, sel, marks, onPick, result }) 
       try {
         const idx = versionIndex(p, app, ch);
         const doc = frame.current.contentDocument;
-        const out = await renderTemplate(idx, new Map(Object.entries(W)), doc, { width, extraCss: HL });
+        const out = render === "form" ? await renderForm(idx, new Map(Object.entries(W)), doc, { width, height: FORM_H, extraCss: HL }) : await renderTemplate(idx, new Map(Object.entries(W)), doc, { width, extraCss: HL });
         if (!alive) return;
         res.current = out;
-        setH(out ? out.height : 40);
+        setH(out ? (render === "form" ? FORM_H : out.height) : 40);
         doc.body.onclick = (e) => { const w = e.target.closest(".kw"); if (w) onPick(w.dataset.path.split(".").pop()); };
         setState(out ? "ok" : "empty");
         setRev((x) => x + 1);

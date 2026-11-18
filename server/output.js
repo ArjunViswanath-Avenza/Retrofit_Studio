@@ -1,6 +1,6 @@
-// Output writer (dev server only): "Move to R26" (TemplateTwin, COMP-are) writes merged segment templates / user widgets
-// into a separate output folder laid out like the R26 project (<root>/<MA>/templates/<ch>/segments/<name>.sm/,
-// <root>/<MA>/userwidgets/<component>/userwidgetmodel.sm/). It never writes into a
+// Output writer (dev server only): "Move to R26" (TemplateTwin, COMP-are, FormForge) writes merged segment templates /
+// user widgets / forms into a separate output folder laid out like the R26 project (<root>/<MA>/templates/<ch>/segments/
+// <name>.sm/, <root>/<MA>/userwidgets/<component>/userwidgetmodel.sm/, <root>/<MA>/forms/<ch>/<module>/<form>.sm/). It never writes into a
 // Visualizer project: any folder on the way that holds projectProperties.json (R21, KBZ, R26 or any micro app) is
 // refused. Answers only on localhost (server/local.js).
 import fs from "node:fs";
