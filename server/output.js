@@ -1,6 +1,7 @@
 // Output writer (dev server only): "Move to R26" (TemplateTwin, COMP-are, FormForge) writes merged segment templates /
 // user widgets / forms into a separate output folder laid out like the R26 project (<root>/<MA>/templates/<ch>/segments/
-// <name>.sm/, <root>/<MA>/userwidgets/<component>/userwidgetmodel.sm/, <root>/<MA>/forms/<ch>/<module>/<form>.sm/). It never writes into a
+// <name>.sm/, <root>/<MA>/userwidgets/<component>/userwidgetmodel.sm/, <root>/<MA>/forms/<ch>/<module>/<form>.sm/,
+// CtrlSync: <root>/<MA>/controllers/<ch>/…/<name>Controller.js). It never writes into a
 // Visualizer project: any folder on the way that holds projectProperties.json (R21, KBZ, R26 or any micro app) is
 // refused. Answers only on localhost (server/local.js).
 import fs from "node:fs";
@@ -48,6 +49,31 @@ export function outputPlugin() {
             fs.mkdirSync(dest, { recursive: true });
             for (const n of names) fs.writeFileSync(path.join(dest, n), files[n], "utf8");
             json(res, 200, { ok: true, path: dest, written: names.length });
+          } catch (e) { json(res, 500, { error: String((e && e.message) || e) }); }
+        });
+      });
+      // POST /api/output/file { root, path: "<MA>/controllers/<ch>/…/<name>Controller.js", text } — one controller file
+      // (CtrlSync), replaced if it is there; the rest of its folder is left alone
+      server.middlewares.use("/api/output/file", (req, res) => {
+        if (!isLocal(req)) return refuse(res, "output writer");
+        if (req.method !== "POST") return json(res, 405, { error: "POST only" });
+        const chunks = [];
+        req.on("data", (c) => chunks.push(c));
+        req.on("end", () => {
+          try {
+            const { root, path: rel, text } = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            if (!root || !path.isAbsolute(root)) return json(res, 400, { error: "give the output folder's full path, e.g. C:\\Projects\\KBZ\\R26-merged" });
+            const segs = String(rel || "").split(/[\\/]/).filter(Boolean);
+            if (segs.length < 3 || segs.some((s) => s === ".." || s === "." || /[:*?"<>|]/.test(s)) || !segs.some((s) => s.toLowerCase() === "controllers") || !/Controller\.js$/i.test(segs[segs.length - 1])) return json(res, 400, { error: "bad controller path" });
+            if (typeof text !== "string") return json(res, 400, { error: "no file text" });
+            const base = path.resolve(root);
+            const dest = path.resolve(base, ...segs);
+            if (!dest.startsWith(base + path.sep)) return json(res, 400, { error: "path outside the output folder" });
+            const inside = projectAround(path.dirname(dest)) || projectAround(base);
+            if (inside) return json(res, 400, { error: `${inside} is a Visualizer project — choose a separate output folder (nothing was written)` });
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.writeFileSync(dest, text, "utf8");
+            json(res, 200, { ok: true, path: dest, bytes: Buffer.byteLength(text, "utf8") });
           } catch (e) { json(res, 500, { error: String((e && e.message) || e) }); }
         });
       });

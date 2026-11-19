@@ -6,6 +6,7 @@ import { TwoCol, ThreeCol } from "../components/DiffView";
 import { Checklist } from "../components/Checklist";
 import { FormsView } from "../components/Forms";
 import { FormsRetroView } from "../components/FormRetro";
+import { CtrlRetroView } from "../components/CtrlRetro";
 import { analyzeForms } from "../lib/formretro";
 import { OverallView } from "../components/Overall";
 import { ComponentsView } from "../components/Components";
@@ -45,6 +46,10 @@ const writeLink = (pid, key, link, store = LINKS_KEY) => {
 // FormForge conflict rules for every form ([{ by: "about" | "bp", k, choice }]), kept in this browser
 const RULES_KEY = "rs.formRules";
 const readRules = () => { try { const x = JSON.parse(localStorage.getItem(RULES_KEY) || "[]"); return Array.isArray(x) ? x : []; } catch { return []; } };
+// CtrlSync · Move to R26 decisions: { scope: { controller key: { function: { choice, edit?, sig } } } }
+const DECISIONS_KEY = "rs.ctrlDecisions";
+const readDecisions = (scope) => { try { return JSON.parse(localStorage.getItem(DECISIONS_KEY) || "{}")[scope] || {}; } catch { return {}; } };
+const writeDecisions = (scope, d) => { try { const all = JSON.parse(localStorage.getItem(DECISIONS_KEY) || "{}"); all[scope] = d; localStorage.setItem(DECISIONS_KEY, JSON.stringify(all)); } catch { /* kept for this session only */ } };
 
 /* ================================================================ monolith → monolith */
 export function CompareMono(props) {
@@ -121,6 +126,7 @@ export function CompareMA(props) {
   const segReport = useMemo(() => (aligned && aligned.report.segs ? new Map(aligned.report.segs.map((r) => [r.key, r])) : null), [aligned]);
   const compReport = useMemo(() => (aligned && aligned.report.comps ? new Map(aligned.report.comps.map((r) => [r.key, r])) : null), [aligned]);
   const formReport = useMemo(() => (aligned && aligned.report.forms ? new Map(aligned.report.forms.map((r) => [r.key, r])) : null), [aligned]);
+  const ctrlReport = useMemo(() => (aligned && aligned.report.controllers ? new Map(aligned.report.controllers.map((r) => [r.key, r])) : null), [aligned]);
   useToolMeta("ma", { entered: !!aligned, status: aligned ? `Comparing · ${CHANNELS[aligned.channel].label}` : ready ? "Ready" : null, reset: () => { setAligned(null); setAligning(null); } });
   if (!aligned) {
     return (
@@ -133,7 +139,7 @@ export function CompareMA(props) {
   return (
     <Shell {...shellOf(props, TOOLS.ma.menu(labels), { ico: "❖", title: "Compare", sub: "Monolith → micro app" }, `${CHANNELS[aligned.channel].label} · ${aligned.picked[2].microApps} ${labels[2]} projects`)}>
       <VisualizerWorkspace key={labels.join("|") + ver} tool="ma" picked={aligned.picked} labels={labels} segReport={segReport} compReport={compReport} relinkComp={relinkComp}
-        formReport={formReport} relinkForm={relinkFormTo} {...props}
+        formReport={formReport} relinkForm={relinkFormTo} ctrlReport={ctrlReport} {...props}
         home={<MicroAppMap aligned={aligned} goto={props.setNav} labels={labels} />} />
     </Shell>
   );
@@ -173,13 +179,22 @@ async function analyzeSets(maps, extractor, meta, onProgress, labels, only = nul
 const KEY_OF = { controllers: (r) => r.path, mvc: (r) => r.path, comps: (r) => r.key, segs: (r) => r.key };
 const fileName = (k) => k.split("/").pop().replace(/\.(sm|js)$/i, "");
 
-function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem, active, home, segReport, compReport, relinkComp, formReport, relinkForm }) {
+function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem, active, home, segReport, compReport, relinkComp, formReport, relinkForm, ctrlReport }) {
   const [bulk, setBulk] = useState(null);
   const [formBulk, setFormBulk] = useState(null); // FormForge with three versions: every form's retrofit analysis
   const [formAnalyzing, setFormAnalyzing] = useState(null);
   const [formRules, setFormRules] = useState(readRules);
   useEffect(() => { try { localStorage.setItem(RULES_KEY, JSON.stringify(formRules)); } catch { /* kept for this session only */ } }, [formRules]);
   const threeWay = !!picked[2];
+  // CtrlSync · Move to R26: per controller, the choices made in its window (kept in this browser per comparison)
+  const decScope = `${tool}|${labels.join("|")}`;
+  const [ctrlDecisions, setCtrlDecisions] = useState(() => readDecisions(decScope));
+  const setDecision = (key, saved) => setCtrlDecisions((d) => {
+    const n = { ...d };
+    if (saved && Object.keys(saved).length) n[key] = saved; else delete n[key];
+    writeDecisions(decScope, n);
+    return n;
+  });
   const [analyzing, setAnalyzing] = useState(null);
   const [formScan, setFormScan] = useState({}); // per version-pair form property scan (kept across menu navigation)
   const [mvcBulk, setMvcBulk] = useState(null);
@@ -379,7 +394,11 @@ function VisualizerWorkspace({ tool, picked, labels, nav, setNav, item, setItem,
           report={compReport} usage={compUsage} usageProg={compUsageProg} relink={relink}
           renderReport={(model) => <Report model={model} {...reportProps} widgets={false} />} />
       )}
-      {nav === "controllers" && (
+      {nav === "controllers" && threeWay && (
+        <CtrlRetroView picked={picked} labels={shown} bulk={bulk} analyzing={analyzing} item={item} setItem={setItem} report={ctrlReport || null}
+          decisions={ctrlDecisions} setDecision={setDecision} renderReport={(model) => <Report model={model} {...reportProps} />} />
+      )}
+      {nav === "controllers" && !threeWay && (
         <AnalysisView title="Controller Retrofit" crumb={`Form-level controllers · ${labels[1]} customisations carried onto ${labels[2]}`} noun="controllers" labels={labels}
           bulk={bulk} analyzing={analyzing} drill={drillAt("controllers")} openDrill={openAt("controllers")} reportProps={reportProps} />
       )}

@@ -30,7 +30,7 @@ const full = (v) => (v === undefined ? "(not set)" : typeof v === "string" ? v :
 const OUT_KEY = "rs.mergeOut";
 const NONE = {};
 
-async function readSet(map) {
+export async function readSet(map) {
   const W = {}, raw = {};
   if (!map) return { W, raw };
   const entries = [...map];
@@ -471,7 +471,7 @@ function WidgetCompare({ ids, labels }) {
   );
 }
 
-function MergePane({ label, p, app, ch, W, width, sel, marks, onPick, result, render }) {
+export function MergePane({ label, p, app, ch, W, width, sel, marks, onPick, result, render }) {
   const frame = useRef(null), box = useRef(null), res = useRef(null);
   const [h, setH] = useState(80);
   const [state, setState] = useState("drawing");
